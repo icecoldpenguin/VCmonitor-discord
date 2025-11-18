@@ -2,9 +2,10 @@ import discord
 from discord.ext import commands
 import asyncio
 from datetime import datetime
+import os
 
 # ================== CONFIG ==================
-TOKEN = "MTQ0MDM5Njg1ODA4MTE1MzA1NA.GBgBaA.3yUTl1sYBz5ZgzjXFmaf_wlnxR479kUlpHTEjk"
+TOKEN = os.getenv("TOKEN")
 
 MONITORED_VC_IDS = {
     1422274947291676672
