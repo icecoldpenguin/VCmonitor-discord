@@ -29,6 +29,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 initial_checks = {}        # member_id -> asyncio.Task
 post_stream_checks = {}    # member_id -> {"reminder": Task, "kick": Task}
 
+print("TOKEN LOADED?:", TOKEN is not None)
+
 # ------------- DM HELPER -------------
 
 async def safe_dm(member: discord.Member, embed: discord.Embed):
