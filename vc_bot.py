@@ -219,10 +219,17 @@ async def start_webserver():
     print("Heartbeat server running")
 
 
-# ------------- MAIN ENTRY POINT -------------
+# ------------- MAIN ENTRY POINT -------------    
 
 async def main():
-    asyncio.create_task(start_webserver())
-    await bot.start(TOKEN)
+    print("Starting main()...")
+    asyncio.create_task(start_webserver())   # start the uptime server
 
-asyncio.run(main())
+    print("Starting Discord bot...")
+    await bot.start(TOKEN)                   # start the bot properly
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print("MAIN CRASHED:", e)
