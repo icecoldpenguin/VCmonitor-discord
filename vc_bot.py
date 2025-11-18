@@ -4,6 +4,19 @@ import asyncio
 from datetime import datetime
 import os
 
+from aiohttp import web
+import threading
+
+async def alive(request):
+    return web.Response(text="Bot running")
+
+def run_web():
+    app = web.Application()
+    app.router.add_get("/", alive)
+    web.run_app(app, port=10000)
+
+threading.Thread(target=run_web).start()
+
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")
 
