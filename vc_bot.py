@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 import asyncio
 from datetime import datetime
 import os
@@ -24,6 +25,7 @@ intents.messages = True
 intents.dm_messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
 
 # Track user monitoring tasks
 initial_checks = {}        # member_id -> asyncio.Task
@@ -152,10 +154,14 @@ async def post_stream_kick_task(member: discord.Member, vc_id: int):
 
 
 # ------------- EVENTS -------------
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} slash commands.")
+    except Exception as e:
+        print("Slash command sync failed:", e)
 
 
 @bot.event
@@ -201,6 +207,45 @@ async def on_voice_state_update(member, before, after):
             reminder = asyncio.create_task(post_stream_reminder_task(member, after.channel.id))
             kick = asyncio.create_task(post_stream_kick_task(member, after.channel.id))
             post_stream_checks[member.id] = {"reminder": reminder, "kick": kick}
+
+# ---------- INVITE --------------
+@tree.command(name="invite", description="Invite a user to your current voice channel")
+async def invite_user(interaction: discord.Interaction, user: discord.Member):
+    inviter = interaction.user
+
+    # Check if inviter is in a VC
+    if inviter.voice is None or inviter.voice.channel is None:
+        return await interaction.response.send_message(
+            "You need to be in a voice channel to use this command.",
+            ephemeral=True
+        )
+
+    vc = inviter.voice.channel
+
+    # Build DM embed
+    embed = discord.Embed(
+        title="Voice Channel Invitation",
+        description=(
+            f"**{inviter.mention}** invited you to join **{vc.name}**\n\n"
+            f"Click here to join: <#{vc.id}>"
+        ),
+        color=0x5865F2
+    )
+    embed.set_footer(text=f"Server: {interaction.guild.name}")
+    embed.timestamp = datetime.utcnow()
+
+    # Try DMing the user
+    try:
+        await user.send(embed=embed)
+        await interaction.response.send_message(
+            f"Invitation sent to {user.mention}!",
+            ephemeral=False
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "User cannot be DMed, try inviting manually.",
+            ephemeral=False
+        )
 
 
 # ------------- RENDER WEB SERVER -------------    
