@@ -6,6 +6,9 @@ from datetime import datetime
 import os
 import json
 import mmh3
+import aiohttp
+import base64
+import json
 
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")
@@ -286,47 +289,49 @@ async def invite_user(interaction, user: discord.Member):
         )
 
 
-# =====================================================
-#                 TEAM POINT COMMANDS
-# =====================================================
+ALLOWED_ROLES = {
+    1438159005846605926,
+    1423663604070223913,
+    1420803949312610384
+}
 
-@tree.command(name="addpoints", description="Add points to a member's team.")
-async def addpoints(interaction: discord.Interaction, member: discord.Member, points: int):
+@tree.command(name="addpoints", description="Add points to a user’s team.")
+async def addpoints(interaction: discord.Interaction, user: discord.Member, points: int):
 
     # Permission check
     if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
-        return await interaction.response.send_message(
-            "You can't use this command.", ephemeral=True
-        )
+        return await interaction.response.send_message("You cannot use this command.", ephemeral=True)
 
-    # Determine team
-    if any(role.id == TEAM_X_ROLE for role in member.roles):
-        team = "X"
-    elif any(role.id == TEAM_Y_ROLE for role in member.roles):
-        team = "Y"
+    # Determine the user's team using your mmh3 logic
+    team_name = calculate_team(user.id)  # You already have this logic earlier
+
+    # Load current points
+    pts = await get_team_points()
+
+    if team_name == "X":
+        pts["X"] += points
     else:
-        return await interaction.response.send_message(
-            "User is not in Team X or Team Y.", ephemeral=True
-        )
+        pts["Y"] += points
 
-    team_points[team] += points
-    save_points()
+    # Save back to GitHub
+    await set_team_points(pts["X"], pts["Y"])
 
     await interaction.response.send_message(
-        f"Added **{points}** points to **Team {team}**!\n"
-        f"Team {team} now has **{team_points[team]}** points."
+        f"Added **{points}** points to **Team {team_name}**!\n\n"
+        f"New totals — X: `{pts['X']}`, Y: `{pts['Y']}`"
     )
 
 
-@tree.command(name="viewteampoints", description="See the current team points.")
+@tree.command(name="viewteampoints", description="View current X/Y team scores.")
 async def viewteampoints(interaction: discord.Interaction):
+    pts = await get_team_points()
+
     embed = discord.Embed(
-        title="🏆 Team Points",
-        color=0x00B0F4
+        title="Team Scores",
+        color=0x5865F2
     )
-    embed.add_field(name="Team X", value=f"**{team_points['X']}**", inline=True)
-    embed.add_field(name="Team Y", value=f"**{team_points['Y']}**", inline=True)
-    embed.timestamp = datetime.utcnow()
+    embed.add_field(name="Team X", value=f"**{pts['X']}**", inline=True)
+    embed.add_field(name="Team Y", value=f"**{pts['Y']}**", inline=True)
 
     await interaction.response.send_message(embed=embed)
 
@@ -414,6 +419,85 @@ async def start_webserver():
     site = web.TCPSite(runner, "0.0.0.0", 10000)
     await site.start()
     print("Heartbeat running")
+
+# ------------------- GITHUB PERSISTENCE LAYER -----------------------
+
+GH_TOKEN = os.getenv("GH_TOKEN")
+GH_OWNER = os.getenv("GH_REPO_OWNER")
+GH_REPO = os.getenv("GH_REPO_NAME")
+GH_FILE = os.getenv("GH_POINTS_FILE_PATH")
+
+GH_API_BASE = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{GH_FILE}"
+
+# store SHA so updates work correctly
+points_file_sha = None  
+
+
+async def github_get_points():
+    """Load points.json from GitHub or create it if missing."""
+    global points_file_sha
+
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(GH_API_BASE, headers=headers) as r:
+            if r.status == 200:
+                data = await r.json()
+                points_file_sha = data["sha"]  # required for updating files later
+
+                content = base64.b64decode(data["content"]).decode()
+                try:
+                    points = json.loads(content)
+                    return points
+                except:
+                    return {"X": 0, "Y": 0}
+
+            else:
+                # File does not exist → create default one
+                print("[GITHUB] points.json missing → creating new one...")
+                await github_update_points({"X": 0, "Y": 0})
+                return {"X": 0, "Y": 0}
+
+
+async def github_update_points(points_dict):
+    """Save updated points.json to GitHub."""
+    global points_file_sha
+
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    content_bytes = json.dumps(points_dict, indent=4).encode()
+    encoded = base64.b64encode(content_bytes).decode()
+
+    payload = {
+        "message": "update team points",
+        "content": encoded,
+        "sha": points_file_sha
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.put(GH_API_BASE, headers=headers, json=payload) as r:
+            if r.status in [200, 201]:
+                resp = await r.json()
+                points_file_sha = resp["content"]["sha"]
+                print("[GITHUB] Points updated successfully.")
+            else:
+                print("[GITHUB] Failed to update points:", r.status)
+                print(await r.text())
+
+async def get_team_points():
+    """Loads the X/Y team scores from GitHub."""
+    return await github_get_points()
+
+
+async def set_team_points(x_points, y_points):
+    """Writes the new values back to GitHub."""
+    await github_update_points({"X": x_points, "Y": y_points})
 
 
 # =====================================================
