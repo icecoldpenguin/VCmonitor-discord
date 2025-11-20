@@ -361,6 +361,44 @@ async def assign_to_team(interaction: discord.Interaction, user: discord.Member)
     await interaction.response.send_message(
         f"{user.mention} has been assigned to **Team {team}** (via mmh3 hashing)."
     )
+@tree.command(name="assigntall", description="Assign deterministic X/Y team roles to all humans in the server.")
+async def assigntall(interaction: discord.Interaction):
+
+    # Permission check — same as your addpoints perms
+    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
+        return await interaction.response.send_message(
+            "You don't have permission to use this.", ephemeral=True
+        )
+
+    await interaction.response.send_message(
+        "Starting bulk team assignment... This may take a moment.", ephemeral=False
+    )
+
+    guild = interaction.guild
+    assigned_x = 0
+    assigned_y = 0
+
+    for member in guild.members:
+        # Skip bots
+        if member.bot:
+            continue
+
+        # Assign role based on consistent hashing
+        team = await assign_team_role(member)
+
+        if team == "X":
+            assigned_x += 1
+        else:
+            assigned_y += 1
+
+        # safety delay to avoid rate limits
+        await asyncio.sleep(0.1)
+
+    await interaction.followup.send(
+        f"✅ Finished assigning teams!\n\n"
+        f"**Team X:** {assigned_x} members\n"
+        f"**Team Y:** {assigned_y} members"
+    )
 
 # =====================================================
 #                   RENDER WEB SERVER
