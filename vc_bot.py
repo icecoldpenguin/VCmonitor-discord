@@ -5,6 +5,7 @@ import asyncio
 from datetime import datetime
 import os
 import json
+import mmh3
 
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")
@@ -122,6 +123,16 @@ def has_required_activity(member):
         return False
     vs = member.voice
     return vs.self_stream or vs.self_video
+
+def calculate_team(user_id: int):
+    key = f"events_of_tsb:{user_id}"
+    hashed = mmh3.hash(key, 0)
+    result = hashed % 10000
+    
+    if result < 5000:
+        return "X"
+    else:
+        return "Y"
 
 
 # =====================================================
@@ -319,7 +330,37 @@ async def viewteampoints(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
+async def assign_team_role(member: discord.Member):
+    team = calculate_team(member.id)
 
+    x_role = member.guild.get_role(TEAM_X_ROLE)
+    y_role = member.guild.get_role(TEAM_Y_ROLE)
+
+    # remove both roles in case user switches
+    try:
+        await member.remove_roles(x_role, y_role)
+    except:
+        pass
+
+    if team == "X":
+        await member.add_roles(x_role)
+        return "X"
+    else:
+        await member.add_roles(y_role)
+        return "Y"
+
+@tree.command(name="assigntoteam", description="Assign a user to their deterministic team via hashing.")
+async def assign_to_team(interaction: discord.Interaction, user: discord.Member):
+
+    # Only staff can do this — optional check
+    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
+        return await interaction.response.send_message("You cannot use this.", ephemeral=True)
+
+    team = await assign_team_role(user)
+
+    await interaction.response.send_message(
+        f"{user.mention} has been assigned to **Team {team}** (via mmh3 hashing)."
+    )
 
 # =====================================================
 #                   RENDER WEB SERVER
