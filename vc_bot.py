@@ -412,52 +412,63 @@ EVENT_VC_ID = 1438178530620866581
 #                        REMINDER
 # =====================================================
 
-@tree.command(name="reminder", description="Schedule an event reminder to send in the future.")
+import time
+
+EVENT_CHANNEL_ID = 1424749944882991114
+EVENT_VC_ID = 1438178530620866581
+
+@tree.command(name="reminder", description="Schedule a reminder for a specific timestamp.")
 async def reminder(
     interaction: discord.Interaction,
     reminder_about: str,
-    time: int
+    timestamp: int
 ):
     """
-    /reminder reminder_about:"Movie Night" time:30
-    → After 30 mins:
-         @everyone
-         🔔EVENT REMINDER
-         Movie Night will start in 10 minutes...
+    /reminder reminder_about:"Study Session" timestamp:1700000000
+    -> Bot waits until that timestamp - 600 seconds (10 min)
+    -> Sends event reminder message
     """
 
+    # CURRENT TIME
+    now = int(time.time())
+
+    # We want reminder 10 minutes BEFORE the timestamp
+    reminder_time = timestamp - 600  # 600 sec = 10 min
+
+    if reminder_time <= now:
+        return await interaction.response.send_message(
+            "That timestamp is too soon or already passed!",
+            ephemeral=True
+        )
+
+    wait_seconds = reminder_time - now
+
     await interaction.response.send_message(
-        f"Reminder set! I’ll remind everyone in **{time} minutes**.",
+        f"Reminder scheduled! I will send it **10 minutes before** <t:{timestamp}:F>.",
         ephemeral=True
     )
 
-    # Background sleeper task
     async def reminder_task():
-        await asyncio.sleep(time * 60)
+        await asyncio.sleep(wait_seconds)
 
         channel = interaction.guild.get_channel(EVENT_CHANNEL_ID)
         if channel is None:
-            print("[REMINDER] Failed: Channel not found.")
+            print("[REMINDER] Error: channel not found.")
             return
 
-        embed = discord.Embed(
-            title="🔔 EVENT REMINDER",
-            description=(
-                f"**{reminder_about}** will start in **10 minutes**!\n\n"
-                f"Join the VC here: <#{EVENT_VC_ID}>"
-            ),
-            color=0xF5C542
+        msg = (
+            "@everyone\n"
+            "**🔔 EVENT REMINDER**\n"
+            f"{reminder_about} will start in **10 minutes**, hop in on <#{EVENT_VC_ID}>.\n\n"
+            f"Event time: <t:{timestamp}:F>"
         )
-        embed.set_footer(text=f"Requested by {interaction.user}")
-        embed.timestamp = datetime.utcnow()
 
         try:
-            await channel.send("@everyone", embed=embed)
-            print(f"[REMINDER] Sent reminder: {reminder_about}")
+            await channel.send(msg)
+            print(f"[REMINDER] Sent reminder for timestamp {timestamp}")
         except Exception as e:
             print(f"[REMINDER ERROR] {e}")
 
-    # Launch the task in background
     asyncio.create_task(reminder_task())
     
 # =====================================================
