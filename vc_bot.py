@@ -405,6 +405,61 @@ async def assigntall(interaction: discord.Interaction):
         f"**Team Y:** {assigned_y} members"
     )
 
+EVENT_CHANNEL_ID = 1424749944882991114
+EVENT_VC_ID = 1438178530620866581
+
+# =====================================================
+#                        REMINDER
+# =====================================================
+
+@tree.command(name="reminder", description="Schedule an event reminder to send in the future.")
+async def reminder(
+    interaction: discord.Interaction,
+    reminder_about: str,
+    time: int
+):
+    """
+    /reminder reminder_about:"Movie Night" time:30
+    → After 30 mins:
+         @everyone
+         🔔EVENT REMINDER
+         Movie Night will start in 10 minutes...
+    """
+
+    await interaction.response.send_message(
+        f"Reminder set! I’ll remind everyone in **{time} minutes**.",
+        ephemeral=True
+    )
+
+    # Background sleeper task
+    async def reminder_task():
+        await asyncio.sleep(time * 60)
+
+        channel = interaction.guild.get_channel(EVENT_CHANNEL_ID)
+        if channel is None:
+            print("[REMINDER] Failed: Channel not found.")
+            return
+
+        embed = discord.Embed(
+            title="🔔 EVENT REMINDER",
+            description=(
+                f"**{reminder_about}** will start in **10 minutes**!\n\n"
+                f"Join the VC here: <#{EVENT_VC_ID}>"
+            ),
+            color=0xF5C542
+        )
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        embed.timestamp = datetime.utcnow()
+
+        try:
+            await channel.send("@everyone", embed=embed)
+            print(f"[REMINDER] Sent reminder: {reminder_about}")
+        except Exception as e:
+            print(f"[REMINDER ERROR] {e}")
+
+    # Launch the task in background
+    asyncio.create_task(reminder_task())
+    
 # =====================================================
 #                   RENDER WEB SERVER
 # =====================================================
