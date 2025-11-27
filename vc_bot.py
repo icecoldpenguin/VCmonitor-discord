@@ -376,8 +376,8 @@ async def assign_team_role(member: discord.Member):
 @app_commands.describe(event_name="Name of the event used in hashing")
 async def assignteams(interaction: discord.Interaction, event_name: str):
 
-    TEAM_X_ROLE = 1438159005846605926
-    TEAM_Y_ROLE = 1423663604070223913
+    TEAM_X_ROLE = 1443554800405975091
+    TEAM_Y_ROLE = 1443555914534617168
 
     await interaction.response.send_message("Assigning teams... This may take a few seconds.", ephemeral=True)
 
