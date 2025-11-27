@@ -9,6 +9,7 @@ import mmh3
 import aiohttp
 import base64
 import json
+import hashlib
 
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")
@@ -127,16 +128,33 @@ def has_required_activity(member):
     vs = member.voice
     return vs.self_stream or vs.self_video
 
-def calculate_team(user_id: int):
-    key = f"events_of_tsb:{user_id}"
-    hashed = mmh3.hash(key, 0)
-    result = hashed % 10000
-    
-    if result < 5000:
-        return "X"
-    else:
-        return "Y"
+async def assign_balanced_teams(guild: discord.Guild, event_name: str, team_x_role_id: int, team_y_role_id: int):
+    team_x_role = guild.get_role(team_x_role_id)
+    team_y_role = guild.get_role(team_y_role_id)
 
+    humans = [m for m in guild.members if not m.bot]
+
+    # ---- STEP 1: create stable hash for each user ----
+    def stable_hash(member: discord.Member):
+        key = f"{event_name}:{member.id}".encode()
+        return int(hashlib.sha256(key).hexdigest(), 16)
+
+    # ---- STEP 2: sort by hash ----
+    sorted_members = sorted(humans, key=lambda m: stable_hash(m))
+
+    # ---- STEP 3: perfect split ----
+    half = len(sorted_members) // 2
+    team_x = sorted_members[:half]
+    team_y = sorted_members[half:]
+
+    # ---- STEP 4: assign roles ----
+    for m in team_x:
+        await m.add_roles(team_x_role, reason="Balanced deterministic team assignment")
+
+    for m in team_y:
+        await m.add_roles(team_y_role, reason="Balanced deterministic team assignment")
+
+    return len(team_x), len(team_y)
 
 # =====================================================
 #                 BACKGROUND TASKS
@@ -354,55 +372,26 @@ async def assign_team_role(member: discord.Member):
         await member.add_roles(y_role)
         return "Y"
 
-@tree.command(name="assigntoteam", description="Assign a user to their deterministic team via hashing.")
-async def assign_to_team(interaction: discord.Interaction, user: discord.Member):
+@tree.command(name="assignteams", description="Assign perfectly balanced teams deterministically.")
+@app_commands.describe(event_name="Name of the event used in hashing")
+async def assignteams(interaction: discord.Interaction, event_name: str):
 
-    # Only staff can do this — optional check
-    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
-        return await interaction.response.send_message("You cannot use this.", ephemeral=True)
+    TEAM_X_ROLE = 1438159005846605926
+    TEAM_Y_ROLE = 1423663604070223913
 
-    team = await assign_team_role(user)
+    await interaction.response.send_message("Assigning teams... This may take a few seconds.", ephemeral=True)
 
-    await interaction.response.send_message(
-        f"{user.mention} has been assigned to **Team {team}** (via mmh3 hashing)."
+    x_count, y_count = await assign_balanced_teams(
+        interaction.guild,
+        event_name,
+        TEAM_X_ROLE,
+        TEAM_Y_ROLE
     )
-@tree.command(name="assigntall", description="Assign deterministic X/Y team roles to all humans in the server.")
-async def assigntall(interaction: discord.Interaction):
-
-    # Permission check — same as your addpoints perms
-    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
-        return await interaction.response.send_message(
-            "You don't have permission to use this.", ephemeral=True
-        )
-
-    await interaction.response.send_message(
-        "Starting bulk team assignment... This may take a moment.", ephemeral=False
-    )
-
-    guild = interaction.guild
-    assigned_x = 0
-    assigned_y = 0
-
-    for member in guild.members:
-        # Skip bots
-        if member.bot:
-            continue
-
-        # Assign role based on consistent hashing
-        team = await assign_team_role(member)
-
-        if team == "X":
-            assigned_x += 1
-        else:
-            assigned_y += 1
-
-        # safety delay to avoid rate limits
-        await asyncio.sleep(0.1)
 
     await interaction.followup.send(
-        f"✅ Finished assigning teams!\n\n"
-        f"**Team X:** {assigned_x} members\n"
-        f"**Team Y:** {assigned_y} members"
+        f"Teams assigned!\n"
+        f"**Team X:** {x_count} members\n"
+        f"**Team Y:** {y_count} members"
     )
 
 EVENT_CHANNEL_ID = 1424749944882991114
