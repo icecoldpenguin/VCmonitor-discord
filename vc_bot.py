@@ -134,25 +134,31 @@ async def assign_balanced_teams(guild: discord.Guild, event_name: str, team_x_ro
 
     humans = [m for m in guild.members if not m.bot]
 
-    # ---- STEP 1: create stable hash for each user ----
+    # stable hash
     def stable_hash(member: discord.Member):
         key = f"{event_name}:{member.id}".encode()
         return int(hashlib.sha256(key).hexdigest(), 16)
 
-    # ---- STEP 2: sort by hash ----
+    # sort
     sorted_members = sorted(humans, key=lambda m: stable_hash(m))
 
-    # ---- STEP 3: perfect split ----
     half = len(sorted_members) // 2
     team_x = sorted_members[:half]
     team_y = sorted_members[half:]
 
-    # ---- STEP 4: assign roles ----
+    # --- IMPORTANT FIX: remove BOTH roles from ALL users first ---
+    for m in humans:
+        try:
+            await m.remove_roles(team_x_role, team_y_role, reason="Rebalancing teams")
+        except:
+            pass
+
+    # assign correctly
     for m in team_x:
-        await m.add_roles(team_x_role, reason="Balanced deterministic team assignment")
+        await m.add_roles(team_x_role, reason="Balanced deterministic assignment")
 
     for m in team_y:
-        await m.add_roles(team_y_role, reason="Balanced deterministic team assignment")
+        await m.add_roles(team_y_role, reason="Balanced deterministic assignment")
 
     return len(team_x), len(team_y)
 
