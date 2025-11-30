@@ -443,7 +443,7 @@ class TeamJoinButton(Button):
         # Pick deterministic team
         team = pick_team_for_user(member.id, self.event_name)
 
-        if team == "X":
+        if team == "A":
             await member.add_roles(x_role)
         else:
             await member.add_roles(y_role)
