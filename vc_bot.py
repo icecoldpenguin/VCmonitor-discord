@@ -170,7 +170,7 @@ def pick_team_for_user(user_id: int, event_name: str) -> str:
     """
     key = f"{event_name}:{user_id}".encode()
     h = int(hashlib.sha256(key).hexdigest(), 16)
-    return "X" if (h % 2 == 0) else "Y"
+    return "A" if (h % 2 == 0) else "B"
 
 TEAM_X_ROLE = 1444727473643327581
 TEAM_Y_ROLE = 1444727513489215641
@@ -466,7 +466,7 @@ async def assignteamembed(interaction: discord.Interaction, event_name: str):
         title="Join The Event!",
         description=(
             "Click the button below to join the event.\n\n"
-            "You will automatically be assigned to **Team X** or **Team Y** "
+            "You will automatically be assigned to **Team A** or **Team B** "
             f"based on a secure per-event hash.\n\n"
             f"**Event:** `{event_name}`"
         ),
