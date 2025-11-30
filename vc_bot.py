@@ -494,7 +494,7 @@ async def on_ready():
 
     # Register persistent views
     # If you have multiple event_names, you must re-add each one manually
-    bot.add_view(TeamJoinView("event_name"))
+    bot.add_view(TeamJoinView("default_event"))
 
 # =====================================================
 #                        REMINDER
