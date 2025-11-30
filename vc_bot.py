@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from discord.ui import View, Button
 import asyncio
 from datetime import datetime
 import os
@@ -161,6 +162,18 @@ async def assign_balanced_teams(guild: discord.Guild, event_name: str, team_x_ro
         await m.add_roles(team_y_role, reason="Balanced deterministic assignment")
 
     return len(team_x), len(team_y)
+
+def pick_team_for_user(user_id: int, event_name: str) -> str:
+    """
+    Deterministic 50/50 assignment:
+    team = SHA256(event_name + user_id) % 2
+    """
+    key = f"{event_name}:{user_id}".encode()
+    h = int(hashlib.sha256(key).hexdigest(), 16)
+    return "X" if (h % 2 == 0) else "Y"
+
+TEAM_X_ROLE = 1444727473643327581
+TEAM_Y_ROLE = 1444727513489215641
 
 # =====================================================
 #                 BACKGROUND TASKS
@@ -402,6 +415,86 @@ async def assignteams(interaction: discord.Interaction, event_name: str):
 
 EVENT_CHANNEL_ID = 1424749944882991114
 EVENT_VC_ID = 1438178530620866581
+
+class TeamJoinButton(Button):
+    def __init__(self, event_name: str):
+        super().__init__(
+            label="Join Event",
+            style=discord.ButtonStyle.blurple,
+            custom_id=f"jointeam_{event_name}"   # persists
+        )
+        self.event_name = event_name
+
+    async def callback(self, interaction: discord.Interaction):
+
+        guild = interaction.guild
+        member = interaction.user
+        
+        # Roles
+        x_role = guild.get_role(TEAM_X_ROLE)
+        y_role = guild.get_role(TEAM_Y_ROLE)
+
+        # Already assigned?
+        if x_role in member.roles or y_role in member.roles:
+            return await interaction.response.send_message(
+                "You already have a team!", ephemeral=True
+            )
+
+        # Pick deterministic team
+        team = pick_team_for_user(member.id, self.event_name)
+
+        if team == "X":
+            await member.add_roles(x_role)
+        else:
+            await member.add_roles(y_role)
+
+        await interaction.response.send_message(
+            f"You have been assigned to **Team {team}**!",
+            ephemeral=True
+        )
+
+class TeamJoinView(View):
+    def __init__(self, event_name: str):
+        super().__init__(timeout=None)  # persistent forever
+        self.add_item(TeamJoinButton(event_name))
+
+@tree.command(name="assignteamembed", description="Post a join-event embed with team auto assignment button.")
+@app_commands.describe(event_name="Name of the event used for hashing")
+async def assignteamembed(interaction: discord.Interaction, event_name: str):
+
+    embed = discord.Embed(
+        title="Join The Event!",
+        description=(
+            "Click the button below to join the event.\n\n"
+            "You will automatically be assigned to **Team X** or **Team Y** "
+            f"based on a secure per-event hash.\n\n"
+            f"**Event:** `{event_name}`"
+        ),
+        color=0x5865F2
+    )
+
+    await interaction.response.send_message(
+        "Team assignment panel created!",
+        ephemeral=True
+    )
+
+    await interaction.channel.send(
+        embed=embed,
+        view=TeamJoinView(event_name)
+    )
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+    try:
+        await bot.tree.sync()
+        print("Slash commands synced.")
+    except Exception as e:
+        print("Sync failed:", e)
+
+    # Register persistent views
+    # If you have multiple event_names, you must re-add each one manually
+    bot.add_view(TeamJoinView("event_name"))
 
 # =====================================================
 #                        REMINDER
