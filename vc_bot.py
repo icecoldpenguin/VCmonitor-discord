@@ -47,6 +47,27 @@ def save_points():
 
 team_points = load_points()
 
+# ============ LAST STAND GAME CONFIG =============
+LAST_STAND_FILE = "last_stand_game.json"
+
+def load_last_stand():
+    try:
+        with open(LAST_STAND_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {
+            "active": False,
+            "players": {},
+            "starting_lives": 3,
+            "pom_logs": []
+        }
+
+def save_last_stand(data):
+    with open(LAST_STAND_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+last_stand_data = load_last_stand()
+
 # =====================================================
 
 intents = discord.Intents.default()
@@ -87,7 +108,7 @@ def make_initial_kick_embed(member, vc):
         title="Voice Enforcement Notice",
         description=(
             f"Hey {member.mention},\n\n"
-            "You were removed from the voice channel because you didn’t enable "
+            "You were removed from the voice channel because you didn't enable "
             "**camera or stream** within the allowed time."
         ),
         color=0xF97316
@@ -243,6 +264,9 @@ async def on_ready():
         print("Synced:", len(synced))
     except Exception as e:
         print("Slash command sync failed:", e)
+    
+    # Register persistent views
+    bot.add_view(TeamJoinView("default_event"))
 
 
 @bot.event
@@ -292,6 +316,288 @@ async def on_voice_state_update(member, before, after):
             post_stream_checks[member.id] = {"reminder": reminder, "kick": kick}
 
 
+# =====================================================
+#              LAST STAND GAME COMMANDS
+# =====================================================
+
+@tree.command(name="laststand_start", description="Start a new Last Stand game")
+@app_commands.describe(starting_lives="Number of lives each player starts with (default: 3)")
+async def laststand_start(interaction: discord.Interaction, starting_lives: int = 3):
+    global last_stand_data
+    
+    # Check permission
+    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
+        return await interaction.response.send_message("You cannot use this command.", ephemeral=True)
+    
+    if last_stand_data["active"]:
+        return await interaction.response.send_message("A game is already active! End it first with `/laststand_end`", ephemeral=True)
+    
+    last_stand_data = {
+        "active": True,
+        "players": {},
+        "starting_lives": starting_lives,
+        "pom_logs": []
+    }
+    save_last_stand(last_stand_data)
+    
+    embed = discord.Embed(
+        title="🎯 LAST STAND - Game Started!",
+        description=(
+            f"A new Last Stand game has begun!\n\n"
+            f"**Starting Lives:** {starting_lives}\n\n"
+            "**How to Play:**\n"
+            "• Join with `/laststand_join`\n"
+            "• Log defensive poms: `/laststand_defend poms:4`\n"
+            "• Attack others: `/laststand_attack target:@user poms:3`\n"
+            "• View status: `/laststand_status`\n\n"
+            "**Rules:**\n"
+            "• Each defensive pom blocks one incoming attack pom\n"
+            "• You can't use the same pom to attack and defend\n"
+            "• When your lives reach 0, you're eliminated\n"
+            "• Last one standing wins!"
+        ),
+        color=0xFF0000
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="laststand_join", description="Join the active Last Stand game")
+async def laststand_join(interaction: discord.Interaction):
+    global last_stand_data
+    
+    if not last_stand_data["active"]:
+        return await interaction.response.send_message("No active game! Start one with `/laststand_start`", ephemeral=True)
+    
+    user_id = str(interaction.user.id)
+    
+    if user_id in last_stand_data["players"]:
+        return await interaction.response.send_message("You're already in the game!", ephemeral=True)
+    
+    last_stand_data["players"][user_id] = {
+        "name": interaction.user.display_name,
+        "lives": last_stand_data["starting_lives"],
+        "defense_poms": 0,
+        "eliminated": False
+    }
+    save_last_stand(last_stand_data)
+    
+    await interaction.response.send_message(
+        f"✅ {interaction.user.mention} joined the game with **{last_stand_data['starting_lives']} lives**!",
+        ephemeral=False
+    )
+
+
+@tree.command(name="laststand_defend", description="Log defensive poms to block attacks")
+@app_commands.describe(poms="Number of poms to add to your defense")
+async def laststand_defend(interaction: discord.Interaction, poms: int):
+    global last_stand_data
+    
+    if not last_stand_data["active"]:
+        return await interaction.response.send_message("No active game!", ephemeral=True)
+    
+    user_id = str(interaction.user.id)
+    
+    if user_id not in last_stand_data["players"]:
+        return await interaction.response.send_message("You're not in the game! Join with `/laststand_join`", ephemeral=True)
+    
+    player = last_stand_data["players"][user_id]
+    
+    if player["eliminated"]:
+        return await interaction.response.send_message("You've been eliminated!", ephemeral=True)
+    
+    if poms <= 0:
+        return await interaction.response.send_message("Poms must be positive!", ephemeral=True)
+    
+    player["defense_poms"] += poms
+    
+    last_stand_data["pom_logs"].append({
+        "type": "defend",
+        "user_id": user_id,
+        "user_name": interaction.user.display_name,
+        "poms": poms,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    save_last_stand(last_stand_data)
+    
+    await interaction.response.send_message(
+        f"🛡️ {interaction.user.mention} added **{poms} defensive poms**! Total defense: **{player['defense_poms']}**",
+        ephemeral=False
+    )
+
+
+@tree.command(name="laststand_attack", description="Attack another player with poms")
+@app_commands.describe(
+    target="The player to attack",
+    poms="Number of poms to use in the attack"
+)
+async def laststand_attack(interaction: discord.Interaction, target: discord.Member, poms: int):
+    global last_stand_data
+    
+    if not last_stand_data["active"]:
+        return await interaction.response.send_message("No active game!", ephemeral=True)
+    
+    attacker_id = str(interaction.user.id)
+    target_id = str(target.id)
+    
+    if attacker_id not in last_stand_data["players"]:
+        return await interaction.response.send_message("You're not in the game!", ephemeral=True)
+    
+    if target_id not in last_stand_data["players"]:
+        return await interaction.response.send_message("Target is not in the game!", ephemeral=True)
+    
+    if attacker_id == target_id:
+        return await interaction.response.send_message("You can't attack yourself!", ephemeral=True)
+    
+    attacker = last_stand_data["players"][attacker_id]
+    target_player = last_stand_data["players"][target_id]
+    
+    if attacker["eliminated"]:
+        return await interaction.response.send_message("You've been eliminated!", ephemeral=True)
+    
+    if target_player["eliminated"]:
+        return await interaction.response.send_message("That player is already eliminated!", ephemeral=True)
+    
+    if poms <= 0:
+        return await interaction.response.send_message("Poms must be positive!", ephemeral=True)
+    
+    # Process attack with defense
+    remaining_poms = poms
+    blocked_poms = 0
+    
+    if target_player["defense_poms"] > 0:
+        blocked_poms = min(remaining_poms, target_player["defense_poms"])
+        target_player["defense_poms"] -= blocked_poms
+        remaining_poms -= blocked_poms
+    
+    # Apply damage
+    damage = remaining_poms
+    target_player["lives"] -= damage
+    
+    # Check if eliminated
+    if target_player["lives"] <= 0:
+        target_player["lives"] = 0
+        target_player["eliminated"] = True
+    
+    last_stand_data["pom_logs"].append({
+        "type": "attack",
+        "attacker_id": attacker_id,
+        "attacker_name": interaction.user.display_name,
+        "target_id": target_id,
+        "target_name": target.display_name,
+        "poms": poms,
+        "blocked": blocked_poms,
+        "damage": damage,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    save_last_stand(last_stand_data)
+    
+    # Create response
+    response = f"⚔️ {interaction.user.mention} attacked {target.mention} with **{poms} poms**!\n\n"
+    
+    if blocked_poms > 0:
+        response += f"🛡️ **{blocked_poms}** poms blocked by defense!\n"
+    
+    if damage > 0:
+        response += f"💥 **{damage}** damage dealt!\n"
+    
+    response += f"\n{target.mention} now has **{target_player['lives']} lives** remaining"
+    
+    if target_player["eliminated"]:
+        response += "\n\n💀 **ELIMINATED!**"
+        
+        # Check if game is over
+        alive_players = [p for p in last_stand_data["players"].values() if not p["eliminated"]]
+        if len(alive_players) == 1:
+            winner_id = [uid for uid, p in last_stand_data["players"].items() if not p["eliminated"]][0]
+            winner = last_stand_data["players"][winner_id]
+            response += f"\n\n🏆 **GAME OVER!** {winner['name']} wins with **{winner['lives']} lives** remaining!"
+    
+    await interaction.response.send_message(response, ephemeral=False)
+
+
+@tree.command(name="laststand_status", description="View the current game status")
+async def laststand_status(interaction: discord.Interaction):
+    global last_stand_data
+    
+    if not last_stand_data["active"]:
+        return await interaction.response.send_message("No active game!", ephemeral=True)
+    
+    if not last_stand_data["players"]:
+        return await interaction.response.send_message("No players have joined yet!", ephemeral=True)
+    
+    embed = discord.Embed(
+        title="🎯 LAST STAND - Current Status",
+        color=0xFF0000
+    )
+    
+    alive_players = []
+    eliminated_players = []
+    
+    for user_id, player in last_stand_data["players"].items():
+        status = f"**{player['name']}**\n"
+        status += f"❤️ Lives: {player['lives']}\n"
+        status += f"🛡️ Defense: {player['defense_poms']}\n"
+        
+        if player["eliminated"]:
+            eliminated_players.append(status)
+        else:
+            alive_players.append(status)
+    
+    if alive_players:
+        embed.add_field(
+            name=f"🟢 Alive ({len(alive_players)})",
+            value="\n".join(alive_players),
+            inline=False
+        )
+    
+    if eliminated_players:
+        embed.add_field(
+            name=f"💀 Eliminated ({len(eliminated_players)})",
+            value="\n".join(eliminated_players),
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="laststand_end", description="End the current Last Stand game")
+async def laststand_end(interaction: discord.Interaction):
+    global last_stand_data
+    
+    # Check permission
+    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
+        return await interaction.response.send_message("You cannot use this command.", ephemeral=True)
+    
+    if not last_stand_data["active"]:
+        return await interaction.response.send_message("No active game!", ephemeral=True)
+    
+    # Find winner if any
+    alive_players = [(uid, p) for uid, p in last_stand_data["players"].items() if not p["eliminated"]]
+    
+    embed = discord.Embed(
+        title="🎯 LAST STAND - Game Ended",
+        color=0xFF0000
+    )
+    
+    if len(alive_players) == 1:
+        winner_id, winner = alive_players[0]
+        embed.description = f"🏆 **Winner:** {winner['name']}\n**Lives Remaining:** {winner['lives']}"
+    else:
+        embed.description = "Game ended with multiple survivors or no clear winner."
+    
+    last_stand_data = {
+        "active": False,
+        "players": {},
+        "starting_lives": 3,
+        "pom_logs": []
+    }
+    save_last_stand(last_stand_data)
+    
+    await interaction.response.send_message(embed=embed)
+
 
 # =====================================================
 #                     INVITE COMMAND
@@ -332,7 +638,7 @@ ALLOWED_ROLES = {
     1420803949312610384
 }
 
-@tree.command(name="addpoints", description="Add points to a user’s team.")
+@tree.command(name="addpoints", description="Add points to a user's team.")
 async def addpoints(interaction: discord.Interaction, user: discord.Member, points: int):
 
     # Permission check
@@ -482,19 +788,6 @@ async def assignteamembed(interaction: discord.Interaction, event_name: str):
         embed=embed,
         view=TeamJoinView(event_name)
     )
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    try:
-        await bot.tree.sync()
-        print("Slash commands synced.")
-    except Exception as e:
-        print("Sync failed:", e)
-
-    # Register persistent views
-    # If you have multiple event_names, you must re-add each one manually
-    bot.add_view(TeamJoinView("default_event"))
 
 # =====================================================
 #                        REMINDER
