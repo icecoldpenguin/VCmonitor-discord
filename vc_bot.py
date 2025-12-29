@@ -1,9 +1,9 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ui import View, Button
 import asyncio
-from datetime import datetime
+from datetime import datetime, time, timedelta
 import os
 import json
 import mmh3
@@ -11,6 +11,8 @@ import aiohttp
 import base64
 import json
 import hashlib
+import time as time_module
+import pytz
 
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")
@@ -67,6 +69,23 @@ def save_last_stand(data):
         json.dump(data, f, indent=4)
 
 last_stand_data = load_last_stand()
+
+# ============ JOURNAL REMINDER CONFIG =============
+JOURNAL_FILE = "journal_reminders.json"
+
+def load_journal_data():
+    try:
+        with open(JOURNAL_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_journal_data(data):
+    with open(JOURNAL_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+journal_data = load_journal_data()
+# Structure: { "user_id": { "enabled": bool, "last_post": "ISO_timestamp" } }
 
 # =====================================================
 
@@ -253,12 +272,91 @@ async def post_stream_kick_task(member, vc_id):
 
 
 # =====================================================
+#              JOURNAL REMINDER BACKGROUND TASK
+# =====================================================
+
+@tasks.loop(minutes=1)
+async def check_journal_reminders():
+    """Check every minute if it's 9 PM IST and send reminders"""
+    
+    # Get current time in IST
+    ist = pytz.timezone('Asia/Kolkata')
+    now_ist = datetime.now(ist)
+    
+    # Check if it's 9:00 PM IST (we check if minute is 0 to send once)
+    if now_ist.hour == 21 and now_ist.minute == 0:
+        print(f"[JOURNAL] It's 9 PM IST - checking for reminders...")
+        
+        # Calculate yesterday 9 PM IST threshold
+        yesterday_9pm = now_ist - timedelta(days=1)
+        
+        for user_id, data in journal_data.items():
+            # Skip if reminders disabled
+            if not data.get("enabled", False):
+                continue
+            
+            # Check if user posted since yesterday 9 PM
+            last_post_str = data.get("last_post")
+            
+            needs_reminder = False
+            
+            if last_post_str is None:
+                # Never posted
+                needs_reminder = True
+            else:
+                try:
+                    # Parse last post time and convert to IST
+                    last_post_utc = datetime.fromisoformat(last_post_str.replace('Z', '+00:00'))
+                    if last_post_utc.tzinfo is None:
+                        last_post_utc = pytz.utc.localize(last_post_utc)
+                    last_post_ist = last_post_utc.astimezone(ist)
+                    
+                    # If last post was before yesterday 9 PM, send reminder
+                    if last_post_ist < yesterday_9pm:
+                        needs_reminder = True
+                except Exception as e:
+                    print(f"[JOURNAL] Error parsing timestamp for {user_id}: {e}")
+                    needs_reminder = True
+            
+            if needs_reminder:
+                try:
+                    user = await bot.fetch_user(int(user_id))
+                    
+                    embed = discord.Embed(
+                        title="📔 Journal Reminder",
+                        description=(
+                            "Hey! It looks like you haven't posted in your journal today.\n\n"
+                            "Take a moment to reflect on your day and write down your thoughts! 💭\n\n"
+                            "Use `/journalpost` after you've updated your journal."
+                        ),
+                        color=0x5865F2,
+                        timestamp=datetime.utcnow()
+                    )
+                    
+                    await user.send(embed=embed)
+                    print(f"[JOURNAL] Sent reminder to user {user_id}")
+                    
+                except discord.Forbidden:
+                    print(f"[JOURNAL] Cannot DM user {user_id}")
+                except Exception as e:
+                    print(f"[JOURNAL] Error sending reminder to {user_id}: {e}")
+        
+        print(f"[JOURNAL] Finished sending reminders")
+
+
+# =====================================================
 #                     EVENTS
 # =====================================================
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    
+    # Start the journal reminder task
+    if not check_journal_reminders.is_running():
+        check_journal_reminders.start()
+        print("[JOURNAL] Journal reminder task started")
+    
     try:
         synced = await bot.tree.sync()
         print("Synced:", len(synced))
@@ -314,6 +412,65 @@ async def on_voice_state_update(member, before, after):
             reminder = asyncio.create_task(post_stream_reminder_task(member, after.channel.id))
             kick = asyncio.create_task(post_stream_kick_task(member, after.channel.id))
             post_stream_checks[member.id] = {"reminder": reminder, "kick": kick}
+
+
+# =====================================================
+#              JOURNAL REMINDER COMMANDS
+# =====================================================
+
+@tree.command(name="remindjournal", description="Enable/disable daily journal reminders at 9 PM IST")
+@app_commands.describe(enable="True to enable reminders, False to disable")
+async def remindjournal(interaction: discord.Interaction, enable: bool):
+    user_id = str(interaction.user.id)
+    
+    if enable:
+        # Enable reminders for this user
+        if user_id not in journal_data:
+            journal_data[user_id] = {
+                "enabled": True,
+                "last_post": None
+            }
+        else:
+            journal_data[user_id]["enabled"] = True
+        
+        save_journal_data(journal_data)
+        
+        await interaction.response.send_message(
+            "✅ Journal reminders enabled! You'll receive a reminder at **9:00 PM IST** "
+            "if you haven't posted in your journal that day.\n\n"
+            "Use `/journalpost` to mark that you've posted today.",
+            ephemeral=True
+        )
+    else:
+        # Disable reminders
+        if user_id in journal_data:
+            journal_data[user_id]["enabled"] = False
+            save_journal_data(journal_data)
+        
+        await interaction.response.send_message(
+            "❌ Journal reminders disabled.",
+            ephemeral=True
+        )
+
+
+@tree.command(name="journalpost", description="Mark that you've posted in your journal today")
+async def journalpost(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in journal_data:
+        journal_data[user_id] = {
+            "enabled": False,
+            "last_post": datetime.utcnow().isoformat()
+        }
+    else:
+        journal_data[user_id]["last_post"] = datetime.utcnow().isoformat()
+    
+    save_journal_data(journal_data)
+    
+    await interaction.response.send_message(
+        "✅ Marked as posted! You won't receive a reminder today.",
+        ephemeral=True
+    )
 
 
 # =====================================================
@@ -793,8 +950,6 @@ async def assignteamembed(interaction: discord.Interaction, event_name: str):
 #                        REMINDER
 # =====================================================
 
-import time
-
 EVENT_CHANNEL_ID = 1424749944882991114
 EVENT_VC_ID = 1438178530620866581
 
@@ -811,7 +966,7 @@ async def reminder(
     """
 
     # CURRENT TIME
-    now = int(time.time())
+    now = int(time_module.time())
 
     # We want reminder 10 minutes BEFORE the timestamp
     reminder_time = timestamp - 600  # 600 sec = 10 min
