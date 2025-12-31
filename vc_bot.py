@@ -1,15 +1,13 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from discord.ui import View, Button
+from discord.ui import View, Button, Modal, TextInput
 import asyncio
 from datetime import datetime, time, timedelta
 import os
 import json
-import mmh3
 import aiohttp
 import base64
-import json
 import hashlib
 import time as time_module
 import pytz
@@ -34,6 +32,26 @@ ALLOWED_ROLES = {
 
 TEAM_X_ROLE = 1440768904204124302
 TEAM_Y_ROLE = 1440769096760168498
+
+# ============ STREAKBOARD CONFIG =============
+STREAKBOARD_FILE = "streakboard.json"
+
+def load_streakboard():
+    try:
+        with open(STREAKBOARD_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {
+            "season_start": datetime.utcnow().isoformat(),
+            "season_number": 1,
+            "players": {}
+        }
+
+def save_streakboard(data):
+    with open(STREAKBOARD_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+streakboard_data = load_streakboard()
 
 # points.json loader/saver
 def load_points():
@@ -85,7 +103,6 @@ def save_journal_data(data):
         json.dump(data, f, indent=4)
 
 journal_data = load_journal_data()
-# Structure: { "user_id": { "enabled": bool, "last_post": "ISO_timestamp" } }
 
 # =====================================================
 
@@ -119,43 +136,61 @@ async def safe_dm(member: discord.Member, embed: discord.Embed):
 
 
 # =====================================================
-#                      EMBEDS
+#                   MODERN EMBEDS
 # =====================================================
 
 def make_initial_kick_embed(member, vc):
     embed = discord.Embed(
-        title="Voice Enforcement Notice",
-        description=(
-            f"Hey {member.mention},\n\n"
-            "You were removed from the voice channel because you didn't enable "
-            "**camera or stream** within the allowed time."
-        ),
-        color=0xF97316
+        title="⚠️ Voice Channel Enforcement",
+        description=f"Hey {member.mention}! 👋\n\nYou were removed from **{vc.name}** because camera or stream wasn't enabled within the required timeframe.",
+        color=0xF59E0B
     )
+    embed.add_field(
+        name="📌 What happened?",
+        value="All members must enable camera 📷 or stream 🖥️ to stay in monitored voice channels.",
+        inline=False
+    )
+    embed.set_footer(text="Need help? Contact a moderator")
     embed.timestamp = datetime.utcnow()
     return embed
 
 def make_reminder_embed(member, vc):
     embed = discord.Embed(
-        title="Reminder: Turn On Stream / Camera",
-        description=(
-            f"{member.mention}, you turned off your **stream/camera**.\n\n"
-            "Please re-enable it within **3 minutes**, or you may be removed."
-        ),
-        color=0x22C55E
+        title="⏰ Friendly Reminder",
+        description=f"{member.mention}, your stream/camera was turned off in **{vc.name}**",
+        color=0x10B981
     )
+    embed.add_field(
+        name="⚡ Action Required",
+        value="Please re-enable your **camera 📷** or **stream 🖥️** within the next **3 minutes**",
+        inline=False
+    )
+    embed.add_field(
+        name="⚠️ Warning",
+        value="Failure to comply may result in removal from the voice channel",
+        inline=False
+    )
+    embed.set_footer(text="Automated Voice Channel Monitor")
     embed.timestamp = datetime.utcnow()
     return embed
 
 def make_post_stream_kick_embed(member, vc):
     embed = discord.Embed(
-        title="You Were Removed From the Voice Channel",
-        description=(
-            f"{member.mention}, you were removed because your "
-            "**stream/camera stayed off** after the reminder period."
-        ),
+        title="🚫 Removed from Voice Channel",
+        description=f"{member.mention}, you were disconnected from **{vc.name}**",
         color=0xEF4444
     )
+    embed.add_field(
+        name="💡 Reason",
+        value="Camera/stream remained disabled after the reminder period",
+        inline=False
+    )
+    embed.add_field(
+        name="🔄 Rejoin",
+        value="You can rejoin once you're ready to enable camera or stream",
+        inline=False
+    )
+    embed.set_footer(text="Voice Channel Compliance System")
     embed.timestamp = datetime.utcnow()
     return embed
 
@@ -175,26 +210,22 @@ async def assign_balanced_teams(guild: discord.Guild, event_name: str, team_x_ro
 
     humans = [m for m in guild.members if not m.bot]
 
-    # stable hash
     def stable_hash(member: discord.Member):
         key = f"{event_name}:{member.id}".encode()
         return int(hashlib.sha256(key).hexdigest(), 16)
 
-    # sort
     sorted_members = sorted(humans, key=lambda m: stable_hash(m))
 
     half = len(sorted_members) // 2
     team_x = sorted_members[:half]
     team_y = sorted_members[half:]
 
-    # --- IMPORTANT FIX: remove BOTH roles from ALL users first ---
     for m in humans:
         try:
             await m.remove_roles(team_x_role, team_y_role, reason="Rebalancing teams")
         except:
             pass
 
-    # assign correctly
     for m in team_x:
         await m.add_roles(team_x_role, reason="Balanced deterministic assignment")
 
@@ -204,16 +235,16 @@ async def assign_balanced_teams(guild: discord.Guild, event_name: str, team_x_ro
     return len(team_x), len(team_y)
 
 def pick_team_for_user(user_id: int, event_name: str) -> str:
-    """
-    Deterministic 50/50 assignment:
-    team = SHA256(event_name + user_id) % 2
-    """
     key = f"{event_name}:{user_id}".encode()
     h = int(hashlib.sha256(key).hexdigest(), 16)
     return "A" if (h % 2 == 0) else "B"
 
-TEAM_X_ROLE = 1444727473643327581
-TEAM_Y_ROLE = 1444727513489215641
+def calculate_team(user_id: int) -> str:
+    """Simple hash-based team assignment"""
+    return "X" if (user_id % 2 == 0) else "Y"
+
+TEAM_X_ROLE_ALT = 1444727473643327581
+TEAM_Y_ROLE_ALT = 1444727513489215641
 
 # =====================================================
 #                 BACKGROUND TASKS
@@ -277,41 +308,30 @@ async def post_stream_kick_task(member, vc_id):
 
 @tasks.loop(minutes=1)
 async def check_journal_reminders():
-    """Check every minute if it's 9 PM IST and send reminders"""
-    
-    # Get current time in IST
     ist = pytz.timezone('Asia/Kolkata')
     now_ist = datetime.now(ist)
     
-    # Check if it's 9:00 PM IST (we check if minute is 0 to send once)
     if now_ist.hour == 21 and now_ist.minute == 0:
         print(f"[JOURNAL] It's 9 PM IST - checking for reminders...")
         
-        # Calculate yesterday 9 PM IST threshold
         yesterday_9pm = now_ist - timedelta(days=1)
         
         for user_id, data in journal_data.items():
-            # Skip if reminders disabled
             if not data.get("enabled", False):
                 continue
             
-            # Check if user posted since yesterday 9 PM
             last_post_str = data.get("last_post")
-            
             needs_reminder = False
             
             if last_post_str is None:
-                # Never posted
                 needs_reminder = True
             else:
                 try:
-                    # Parse last post time and convert to IST
                     last_post_utc = datetime.fromisoformat(last_post_str.replace('Z', '+00:00'))
                     if last_post_utc.tzinfo is None:
                         last_post_utc = pytz.utc.localize(last_post_utc)
                     last_post_ist = last_post_utc.astimezone(ist)
                     
-                    # If last post was before yesterday 9 PM, send reminder
                     if last_post_ist < yesterday_9pm:
                         needs_reminder = True
                 except Exception as e:
@@ -323,15 +343,22 @@ async def check_journal_reminders():
                     user = await bot.fetch_user(int(user_id))
                     
                     embed = discord.Embed(
-                        title="📔 Journal Reminder",
-                        description=(
-                            "Hey! It looks like you haven't posted in your journal today.\n\n"
-                            "Take a moment to reflect on your day and write down your thoughts! 💭\n\n"
-                            "Use `/journalpost` after you've updated your journal."
-                        ),
-                        color=0x5865F2,
-                        timestamp=datetime.utcnow()
+                        title="📔 Daily Journal Reminder",
+                        description="Hey there! It looks like you haven't posted in your journal today. 🌙",
+                        color=0x8B5CF6
                     )
+                    embed.add_field(
+                        name="✨ Take a moment to reflect",
+                        value="Writing down your thoughts helps you grow and process your day!",
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="📝 What to do",
+                        value="After updating your journal, use `/journalpost` to mark it complete.",
+                        inline=False
+                    )
+                    embed.set_footer(text="Daily journaling builds character 💪")
+                    embed.timestamp = datetime.utcnow()
                     
                     await user.send(embed=embed)
                     print(f"[JOURNAL] Sent reminder to user {user_id}")
@@ -345,6 +372,55 @@ async def check_journal_reminders():
 
 
 # =====================================================
+#              STREAKBOARD DAILY CHECK
+# =====================================================
+
+@tasks.loop(hours=24)
+async def check_streaks_daily():
+    """Check at midnight UTC if players completed their tasks"""
+    global streakboard_data
+    
+    print("[STREAKBOARD] Running daily streak check...")
+    
+    current_time = datetime.utcnow()
+    
+    for user_id, player_data in streakboard_data["players"].items():
+        if not player_data.get("streak_active", False):
+            continue
+        
+        last_completion = player_data.get("last_completion")
+        
+        if last_completion:
+            last_time = datetime.fromisoformat(last_completion)
+            hours_since = (current_time - last_time).total_seconds() / 3600
+            
+            if hours_since > 24:
+                player_data["streak"] = 0
+                player_data["streak_active"] = False
+                print(f"[STREAKBOARD] Streak broken for user {user_id}")
+                
+                try:
+                    user = await bot.fetch_user(int(user_id))
+                    embed = discord.Embed(
+                        title="💔 Streak Broken",
+                        description="Your streak has been reset because you didn't complete your tasks within 24 hours.",
+                        color=0xEF4444
+                    )
+                    embed.add_field(
+                        name="🔄 Start Again",
+                        value="Use `/streak_start` to define new tasks and begin a fresh streak!",
+                        inline=False
+                    )
+                    embed.set_footer(text="Don't give up! Every day is a new opportunity")
+                    embed.timestamp = datetime.utcnow()
+                    await user.send(embed=embed)
+                except:
+                    pass
+    
+    save_streakboard(streakboard_data)
+
+
+# =====================================================
 #                     EVENTS
 # =====================================================
 
@@ -352,10 +428,13 @@ async def check_journal_reminders():
 async def on_ready():
     print(f"Logged in as {bot.user}")
     
-    # Start the journal reminder task
     if not check_journal_reminders.is_running():
         check_journal_reminders.start()
         print("[JOURNAL] Journal reminder task started")
+    
+    if not check_streaks_daily.is_running():
+        check_streaks_daily.start()
+        print("[STREAKBOARD] Daily streak check started")
     
     try:
         synced = await bot.tree.sync()
@@ -363,13 +442,11 @@ async def on_ready():
     except Exception as e:
         print("Slash command sync failed:", e)
     
-    # Register persistent views
     bot.add_view(TeamJoinView("default_event"))
 
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Leaving monitored VC
     if before.channel and before.channel.id in MONITORED_VC_IDS:
         if not after.channel or after.channel.id not in MONITORED_VC_IDS:
             if member.id in initial_checks:
@@ -381,7 +458,6 @@ async def on_voice_state_update(member, before, after):
                     t.cancel()
                 post_stream_checks.pop(member.id)
 
-    # Joining monitored VC
     if after.channel and after.channel.id in MONITORED_VC_IDS and not before.channel:
         if not has_required_activity(member):
             task = asyncio.create_task(initial_check_task(member, after.channel.id))
@@ -390,7 +466,6 @@ async def on_voice_state_update(member, before, after):
     before_active = before.self_stream or before.self_video if before else False
     after_active = after.self_stream or after.self_video if after else False
 
-    # Turned ON stream/cam
     if not before_active and after_active:
         if member.id in initial_checks:
             initial_checks[member.id].cancel()
@@ -401,7 +476,6 @@ async def on_voice_state_update(member, before, after):
                 t.cancel()
             post_stream_checks.pop(member.id)
 
-    # Turned OFF stream/cam
     if before_active and not after_active:
         if after.channel and after.channel.id in MONITORED_VC_IDS:
             if member.id in post_stream_checks:
@@ -415,700 +489,525 @@ async def on_voice_state_update(member, before, after):
 
 
 # =====================================================
-#              JOURNAL REMINDER COMMANDS
+#              STREAKBOARD COMMANDS
+# =====================================================
+
+class TaskModal(Modal, title="Define Your Daily Tasks"):
+    task_input = TextInput(
+        label="Enter your tasks (one per line)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Morning workout\nRead 30 pages\nMeditate 10 minutes\nCode for 2 hours",
+        required=True,
+        max_length=500
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        tasks = [t.strip() for t in self.task_input.value.split('\n') if t.strip()]
+        
+        if len(tasks) == 0:
+            return await interaction.response.send_message("❌ You must define at least one task!", ephemeral=True)
+        
+        user_id = str(interaction.user.id)
+        
+        if user_id not in streakboard_data["players"]:
+            streakboard_data["players"][user_id] = {
+                "streak": 0,
+                "tasks": tasks,
+                "last_completion": None,
+                "streak_active": False,
+                "username": interaction.user.display_name
+            }
+        else:
+            streakboard_data["players"][user_id]["tasks"] = tasks
+        
+        save_streakboard(streakboard_data)
+        
+        tasks_formatted = "\n".join([f"• {task}" for task in tasks])
+        
+        embed = discord.Embed(
+            title="✅ Tasks Defined Successfully!",
+            description="Your daily tasks have been set. Complete them all to maintain your streak! 🔥",
+            color=0x10B981
+        )
+        embed.add_field(
+            name="📋 Your Daily Tasks",
+            value=tasks_formatted,
+            inline=False
+        )
+        embed.add_field(
+            name="⚡ Next Steps",
+            value="Use `/streak_complete` when you finish all tasks today!",
+            inline=False
+        )
+        embed.set_footer(text="Consistency is key to success")
+        embed.timestamp = datetime.utcnow()
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="streak_start", description="Start or restart your streak by defining daily tasks")
+async def streak_start(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    
+    if user_id in streakboard_data["players"]:
+        player = streakboard_data["players"][user_id]
+        if player.get("streak_active", False) and player.get("streak", 0) > 0:
+            return await interaction.response.send_message(
+                "❌ You already have an active streak! Use `/streak_view` to see your progress.",
+                ephemeral=True
+            )
+    
+    await interaction.response.send_modal(TaskModal())
+
+
+@tree.command(name="streak_addtask", description="Add a new task to your active streak")
+@app_commands.describe(task="The task to add to your daily routine")
+async def streak_addtask(interaction: discord.Interaction, task: str):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in streakboard_data["players"]:
+        return await interaction.response.send_message(
+            "❌ You don't have a streak yet! Use `/streak_start` to begin.",
+            ephemeral=True
+        )
+    
+    player = streakboard_data["players"][user_id]
+    
+    if task in player["tasks"]:
+        return await interaction.response.send_message("❌ This task already exists!", ephemeral=True)
+    
+    player["tasks"].append(task)
+    save_streakboard(streakboard_data)
+    
+    embed = discord.Embed(
+        title="✅ Task Added!",
+        description=f"Successfully added: **{task}**",
+        color=0x10B981
+    )
+    embed.add_field(
+        name="📝 Total Tasks",
+        value=f"You now have **{len(player['tasks'])}** daily tasks",
+        inline=False
+    )
+    embed.set_footer(text="Remember: You can't remove tasks during an active streak")
+    embed.timestamp = datetime.utcnow()
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="streak_complete", description="Mark all your tasks as complete for today")
+async def streak_complete(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in streakboard_data["players"]:
+        return await interaction.response.send_message(
+            "❌ You don't have any tasks defined! Use `/streak_start` to begin.",
+            ephemeral=True
+        )
+    
+    player = streakboard_data["players"][user_id]
+    
+    if len(player["tasks"]) == 0:
+        return await interaction.response.send_message(
+            "❌ You need to define tasks first! Use `/streak_start`.",
+            ephemeral=True
+        )
+    
+    player["streak"] += 1
+    player["last_completion"] = datetime.utcnow().isoformat()
+    player["streak_active"] = True
+    player["username"] = interaction.user.display_name
+    
+    save_streakboard(streakboard_data)
+    
+    streak_emoji = "🔥" * min(player["streak"], 10)
+    
+    embed = discord.Embed(
+        title="🎉 Tasks Completed!",
+        description=f"Amazing work, {interaction.user.mention}! All tasks completed for today.",
+        color=0xF59E0B
+    )
+    embed.add_field(
+        name=f"{streak_emoji} Current Streak",
+        value=f"**{player['streak']} days**",
+        inline=True
+    )
+    embed.add_field(
+        name="📅 Last Completion",
+        value=f"<t:{int(datetime.utcnow().timestamp())}:R>",
+        inline=True
+    )
+    embed.add_field(
+        name="💪 Keep Going!",
+        value="Don't forget to complete your tasks tomorrow to maintain the streak!",
+        inline=False
+    )
+    embed.set_footer(text="Consistency builds excellence")
+    embed.timestamp = datetime.utcnow()
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="streak_view", description="View your current streak and tasks")
+async def streak_view(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in streakboard_data["players"]:
+        embed = discord.Embed(
+            title="📊 No Streak Found",
+            description="You haven't started tracking your streak yet!",
+            color=0x6B7280
+        )
+        embed.add_field(
+            name="🚀 Get Started",
+            value="Use `/streak_start` to define your daily tasks and begin your journey!",
+            inline=False
+        )
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    player = streakboard_data["players"][user_id]
+    
+    streak_emoji = "🔥" * min(max(player["streak"], 1), 10)
+    status = "✅ Active" if player.get("streak_active") else "⏸️ Inactive"
+    
+    embed = discord.Embed(
+        title=f"{streak_emoji} Your Streak",
+        description=f"**Status:** {status}",
+        color=0xF59E0B if player.get("streak_active") else 0x6B7280
+    )
+    embed.add_field(
+        name="📈 Current Streak",
+        value=f"**{player['streak']} days**",
+        inline=True
+    )
+    
+    if player.get("last_completion"):
+        last_time = datetime.fromisoformat(player["last_completion"])
+        embed.add_field(
+            name="⏰ Last Completion",
+            value=f"<t:{int(last_time.timestamp())}:R>",
+            inline=True
+        )
+    
+    tasks_formatted = "\n".join([f"• {task}" for task in player["tasks"]])
+    embed.add_field(
+        name="📋 Daily Tasks",
+        value=tasks_formatted if tasks_formatted else "*No tasks defined*",
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Season {streakboard_data['season_number']}")
+    embed.timestamp = datetime.utcnow()
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="streakboard", description="View the global streakboard leaderboard")
+async def streakboard(interaction: discord.Interaction):
+    players = streakboard_data["players"]
+    
+    active_players = {
+        uid: data for uid, data in players.items()
+        if data.get("streak_active") and data.get("streak", 0) > 0
+    }
+    
+    if not active_players:
+        embed = discord.Embed(
+            title="🏆 Streakboard",
+            description="No active streaks yet! Be the first to start one with `/streak_start`",
+            color=0x6B7280
+        )
+        embed.set_footer(text=f"Season {streakboard_data['season_number']}")
+        return await interaction.response.send_message(embed=embed)
+    
+    sorted_players = sorted(
+        active_players.items(),
+        key=lambda x: x[1]["streak"],
+        reverse=True
+    )
+    
+    leaderboard_text = ""
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for idx, (uid, data) in enumerate(sorted_players[:10]):
+        medal = medals[idx] if idx < 3 else f"**{idx + 1}.**"
+        username = data.get("username", "Unknown")
+        streak = data["streak"]
+        fire = "🔥" * min(streak // 5 + 1, 5)
+        
+        leaderboard_text += f"{medal} **{username}** — {streak} days {fire}\n"
+    
+    embed = discord.Embed(
+        title="🏆 Streakboard Leaderboard",
+        description=leaderboard_text,
+        color=0xF59E0B
+    )
+    
+    season_start = datetime.fromisoformat(streakboard_data["season_start"])
+    embed.add_field(
+        name="📅 Current Season",
+        value=f"Season {streakboard_data['season_number']} • Started <t:{int(season_start.timestamp())}:R>",
+        inline=False
+    )
+    embed.add_field(
+        name="👥 Active Streakers",
+        value=f"**{len(active_players)}** players maintaining streaks",
+        inline=True
+    )
+    
+    if sorted_players:
+        longest = max(sorted_players, key=lambda x: x[1]["streak"])
+        embed.add_field(
+            name="🔥 Longest Streak",
+            value=f"**{longest[1]['streak']} days** by {longest[1].get('username', 'Unknown')}",
+            inline=True
+        )
+    
+    embed.set_footer(text="Keep up the momentum! 💪")
+    embed.timestamp = datetime.utcnow()
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="streak_reset_season", description="[ADMIN] Reset the season and all streaks")
+async def streak_reset_season(interaction: discord.Interaction):
+    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
+        return await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+    
+    global streakboard_data
+    
+    old_season = streakboard_data["season_number"]
+    
+    streakboard_data = {
+        "season_start": datetime.utcnow().isoformat(),
+        "season_number": old_season + 1,
+        "players": {}
+    }
+    
+    save_streakboard(streakboard_data)
+    
+    embed = discord.Embed(
+        title="🔄 New Season Started!",
+        description=f"Season {old_season} has ended. Welcome to **Season {streakboard_data['season_number']}**!",
+        color=0x8B5CF6
+    )
+    embed.add_field(
+        name="✨ Fresh Start",
+        value="All streaks have been reset. Time to build new habits and chase new goals!",
+        inline=False
+    )
+    embed.add_field(
+        name="🚀 Get Started",
+        value="Use `/streak_start` to begin your journey in the new season!",
+        inline=False
+    )
+    embed.set_footer(text="New season, new opportunities")
+    embed.timestamp = datetime.utcnow()
+    
+    await interaction.response.send_message(embed=embed)
+
+# =====================================================
+#              JOURNAL REMINDER COMMANDS (CONTINUED)
 # =====================================================
 
 @tree.command(name="remindjournal", description="Enable/disable daily journal reminders at 9 PM IST")
 @app_commands.describe(enable="True to enable reminders, False to disable")
 async def remindjournal(interaction: discord.Interaction, enable: bool):
     user_id = str(interaction.user.id)
-    
-    if enable:
-        # Enable reminders for this user
-        if user_id not in journal_data:
-            journal_data[user_id] = {
-                "enabled": True,
-                "last_post": None
-            }
-        else:
-            journal_data[user_id]["enabled"] = True
-        
-        save_journal_data(journal_data)
-        
-        await interaction.response.send_message(
-            "✅ Journal reminders enabled! You'll receive a reminder at **9:00 PM IST** "
-            "if you haven't posted in your journal that day.\n\n"
-            "Use `/journalpost` to mark that you've posted today.",
-            ephemeral=True
-        )
-    else:
-        # Disable reminders
-        if user_id in journal_data:
-            journal_data[user_id]["enabled"] = False
-            save_journal_data(journal_data)
-        
-        await interaction.response.send_message(
-            "❌ Journal reminders disabled.",
-            ephemeral=True
-        )
 
-
-@tree.command(name="journalpost", description="Mark that you've posted in your journal today")
-async def journalpost(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    
     if user_id not in journal_data:
         journal_data[user_id] = {
             "enabled": False,
-            "last_post": datetime.utcnow().isoformat()
+            "last_post": None
         }
-    else:
-        journal_data[user_id]["last_post"] = datetime.utcnow().isoformat()
-    
+
+    journal_data[user_id]["enabled"] = enable
     save_journal_data(journal_data)
-    
-    await interaction.response.send_message(
-        "✅ Marked as posted! You won't receive a reminder today.",
-        ephemeral=True
+
+    status = "enabled ✅" if enable else "disabled ❌"
+
+    embed = discord.Embed(
+        title="📔 Journal Reminder Updated",
+        description=f"Daily journal reminders have been **{status}**.",
+        color=0x10B981 if enable else 0xEF4444
     )
+    embed.add_field(
+        name="⏰ Reminder Time",
+        value="Every day at **9:00 PM IST**",
+        inline=False
+    )
+    embed.set_footer(text="Consistency compounds over time")
+    embed.timestamp = datetime.utcnow()
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="journalpost", description="Mark today's journal as completed")
+async def journalpost(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+
+    if user_id not in journal_data:
+        journal_data[user_id] = {
+            "enabled": True,
+            "last_post": None
+        }
+
+    journal_data[user_id]["last_post"] = datetime.utcnow().isoformat()
+    save_journal_data(journal_data)
+
+    embed = discord.Embed(
+        title="📝 Journal Logged",
+        description="Great job! Today's journal entry has been marked as complete. 🌙",
+        color=0x8B5CF6
+    )
+    embed.add_field(
+        name="🔥 Momentum",
+        value="Show up again tomorrow. Small wins build big discipline.",
+        inline=False
+    )
+    embed.set_footer(text="Reflection sharpens the mind")
+    embed.timestamp = datetime.utcnow()
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =====================================================
+#              TEAM JOIN VIEW (BUTTON UI)
+# =====================================================
+
+class TeamJoinView(View):
+    def __init__(self, event_name: str):
+        super().__init__(timeout=None)
+        self.event_name = event_name
+
+    @discord.ui.button(label="Join Team X", style=discord.ButtonStyle.primary, custom_id="join_team_x")
+    async def join_x(self, interaction: discord.Interaction, button: Button):
+        team = pick_team_for_user(interaction.user.id, self.event_name)
+        role = interaction.guild.get_role(TEAM_X_ROLE_ALT if team == "A" else TEAM_Y_ROLE_ALT)
+
+        await interaction.user.add_roles(role, reason="Team join via button")
+
+        embed = discord.Embed(
+            title="⚔️ Team Assigned",
+            description=f"You have been placed in **{role.name}**",
+            color=0x3B82F6
+        )
+        embed.set_footer(text="Balanced & deterministic assignment")
+        embed.timestamp = datetime.utcnow()
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Join Team Y", style=discord.ButtonStyle.secondary, custom_id="join_team_y")
+    async def join_y(self, interaction: discord.Interaction, button: Button):
+        team = pick_team_for_user(interaction.user.id, self.event_name)
+        role = interaction.guild.get_role(TEAM_Y_ROLE_ALT if team == "A" else TEAM_X_ROLE_ALT)
+
+        await interaction.user.add_roles(role, reason="Team join via button")
+
+        embed = discord.Embed(
+            title="⚔️ Team Assigned",
+            description=f"You have been placed in **{role.name}**",
+            color=0x6366F1
+        )
+        embed.set_footer(text="Balanced & deterministic assignment")
+        embed.timestamp = datetime.utcnow()
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # =====================================================
 #              LAST STAND GAME COMMANDS
 # =====================================================
 
-@tree.command(name="laststand_start", description="Start a new Last Stand game")
-@app_commands.describe(starting_lives="Number of lives each player starts with (default: 3)")
-async def laststand_start(interaction: discord.Interaction, starting_lives: int = 3):
-    global last_stand_data
-    
-    # Check permission
+@tree.command(name="laststand_start", description="[ADMIN] Start a Last Stand challenge")
+async def laststand_start(interaction: discord.Interaction, lives: int = 3):
     if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
-        return await interaction.response.send_message("You cannot use this command.", ephemeral=True)
-    
-    if last_stand_data["active"]:
-        return await interaction.response.send_message("A game is already active! End it first with `/laststand_end`", ephemeral=True)
-    
-    last_stand_data = {
+        return await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+
+    last_stand_data.update({
         "active": True,
         "players": {},
-        "starting_lives": starting_lives,
+        "starting_lives": lives,
         "pom_logs": []
-    }
-    save_last_stand(last_stand_data)
-    
-    embed = discord.Embed(
-        title="🎯 LAST STAND - Game Started!",
-        description=(
-            f"A new Last Stand game has begun!\n\n"
-            f"**Starting Lives:** {starting_lives}\n\n"
-            "**How to Play:**\n"
-            "• Join with `/laststand_join`\n"
-            "• Log defensive poms: `/laststand_defend poms:4`\n"
-            "• Attack others: `/laststand_attack target:@user poms:3`\n"
-            "• View status: `/laststand_status`\n\n"
-            "**Rules:**\n"
-            "• Each defensive pom blocks one incoming attack pom\n"
-            "• You can't use the same pom to attack and defend\n"
-            "• When your lives reach 0, you're eliminated\n"
-            "• Last one standing wins!"
-        ),
-        color=0xFF0000
-    )
-    
-    await interaction.response.send_message(embed=embed)
-
-
-@tree.command(name="laststand_join", description="Join the active Last Stand game")
-async def laststand_join(interaction: discord.Interaction):
-    global last_stand_data
-    
-    if not last_stand_data["active"]:
-        return await interaction.response.send_message("No active game! Start one with `/laststand_start`", ephemeral=True)
-    
-    user_id = str(interaction.user.id)
-    
-    if user_id in last_stand_data["players"]:
-        return await interaction.response.send_message("You're already in the game!", ephemeral=True)
-    
-    last_stand_data["players"][user_id] = {
-        "name": interaction.user.display_name,
-        "lives": last_stand_data["starting_lives"],
-        "defense_poms": 0,
-        "eliminated": False
-    }
-    save_last_stand(last_stand_data)
-    
-    await interaction.response.send_message(
-        f"✅ {interaction.user.mention} joined the game with **{last_stand_data['starting_lives']} lives**!",
-        ephemeral=False
-    )
-
-
-@tree.command(name="laststand_defend", description="Log defensive poms to block attacks")
-@app_commands.describe(poms="Number of poms to add to your defense")
-async def laststand_defend(interaction: discord.Interaction, poms: int):
-    global last_stand_data
-    
-    if not last_stand_data["active"]:
-        return await interaction.response.send_message("No active game!", ephemeral=True)
-    
-    user_id = str(interaction.user.id)
-    
-    if user_id not in last_stand_data["players"]:
-        return await interaction.response.send_message("You're not in the game! Join with `/laststand_join`", ephemeral=True)
-    
-    player = last_stand_data["players"][user_id]
-    
-    if player["eliminated"]:
-        return await interaction.response.send_message("You've been eliminated!", ephemeral=True)
-    
-    if poms <= 0:
-        return await interaction.response.send_message("Poms must be positive!", ephemeral=True)
-    
-    player["defense_poms"] += poms
-    
-    last_stand_data["pom_logs"].append({
-        "type": "defend",
-        "user_id": user_id,
-        "user_name": interaction.user.display_name,
-        "poms": poms,
-        "timestamp": datetime.utcnow().isoformat()
     })
-    
+
     save_last_stand(last_stand_data)
-    
-    await interaction.response.send_message(
-        f"🛡️ {interaction.user.mention} added **{poms} defensive poms**! Total defense: **{player['defense_poms']}**",
-        ephemeral=False
-    )
-
-
-@tree.command(name="laststand_attack", description="Attack another player with poms")
-@app_commands.describe(
-    target="The player to attack",
-    poms="Number of poms to use in the attack"
-)
-async def laststand_attack(interaction: discord.Interaction, target: discord.Member, poms: int):
-    global last_stand_data
-    
-    if not last_stand_data["active"]:
-        return await interaction.response.send_message("No active game!", ephemeral=True)
-    
-    attacker_id = str(interaction.user.id)
-    target_id = str(target.id)
-    
-    if attacker_id not in last_stand_data["players"]:
-        return await interaction.response.send_message("You're not in the game!", ephemeral=True)
-    
-    if target_id not in last_stand_data["players"]:
-        return await interaction.response.send_message("Target is not in the game!", ephemeral=True)
-    
-    if attacker_id == target_id:
-        return await interaction.response.send_message("You can't attack yourself!", ephemeral=True)
-    
-    attacker = last_stand_data["players"][attacker_id]
-    target_player = last_stand_data["players"][target_id]
-    
-    if attacker["eliminated"]:
-        return await interaction.response.send_message("You've been eliminated!", ephemeral=True)
-    
-    if target_player["eliminated"]:
-        return await interaction.response.send_message("That player is already eliminated!", ephemeral=True)
-    
-    if poms <= 0:
-        return await interaction.response.send_message("Poms must be positive!", ephemeral=True)
-    
-    # Process attack with defense
-    remaining_poms = poms
-    blocked_poms = 0
-    
-    if target_player["defense_poms"] > 0:
-        blocked_poms = min(remaining_poms, target_player["defense_poms"])
-        target_player["defense_poms"] -= blocked_poms
-        remaining_poms -= blocked_poms
-    
-    # Apply damage
-    damage = remaining_poms
-    target_player["lives"] -= damage
-    
-    # Check if eliminated
-    if target_player["lives"] <= 0:
-        target_player["lives"] = 0
-        target_player["eliminated"] = True
-    
-    last_stand_data["pom_logs"].append({
-        "type": "attack",
-        "attacker_id": attacker_id,
-        "attacker_name": interaction.user.display_name,
-        "target_id": target_id,
-        "target_name": target.display_name,
-        "poms": poms,
-        "blocked": blocked_poms,
-        "damage": damage,
-        "timestamp": datetime.utcnow().isoformat()
-    })
-    
-    save_last_stand(last_stand_data)
-    
-    # Create response
-    response = f"⚔️ {interaction.user.mention} attacked {target.mention} with **{poms} poms**!\n\n"
-    
-    if blocked_poms > 0:
-        response += f"🛡️ **{blocked_poms}** poms blocked by defense!\n"
-    
-    if damage > 0:
-        response += f"💥 **{damage}** damage dealt!\n"
-    
-    response += f"\n{target.mention} now has **{target_player['lives']} lives** remaining"
-    
-    if target_player["eliminated"]:
-        response += "\n\n💀 **ELIMINATED!**"
-        
-        # Check if game is over
-        alive_players = [p for p in last_stand_data["players"].values() if not p["eliminated"]]
-        if len(alive_players) == 1:
-            winner_id = [uid for uid, p in last_stand_data["players"].items() if not p["eliminated"]][0]
-            winner = last_stand_data["players"][winner_id]
-            response += f"\n\n🏆 **GAME OVER!** {winner['name']} wins with **{winner['lives']} lives** remaining!"
-    
-    await interaction.response.send_message(response, ephemeral=False)
-
-
-@tree.command(name="laststand_status", description="View the current game status")
-async def laststand_status(interaction: discord.Interaction):
-    global last_stand_data
-    
-    if not last_stand_data["active"]:
-        return await interaction.response.send_message("No active game!", ephemeral=True)
-    
-    if not last_stand_data["players"]:
-        return await interaction.response.send_message("No players have joined yet!", ephemeral=True)
-    
-    embed = discord.Embed(
-        title="🎯 LAST STAND - Current Status",
-        color=0xFF0000
-    )
-    
-    alive_players = []
-    eliminated_players = []
-    
-    for user_id, player in last_stand_data["players"].items():
-        status = f"**{player['name']}**\n"
-        status += f"❤️ Lives: {player['lives']}\n"
-        status += f"🛡️ Defense: {player['defense_poms']}\n"
-        
-        if player["eliminated"]:
-            eliminated_players.append(status)
-        else:
-            alive_players.append(status)
-    
-    if alive_players:
-        embed.add_field(
-            name=f"🟢 Alive ({len(alive_players)})",
-            value="\n".join(alive_players),
-            inline=False
-        )
-    
-    if eliminated_players:
-        embed.add_field(
-            name=f"💀 Eliminated ({len(eliminated_players)})",
-            value="\n".join(eliminated_players),
-            inline=False
-        )
-    
-    await interaction.response.send_message(embed=embed)
-
-
-@tree.command(name="laststand_end", description="End the current Last Stand game")
-async def laststand_end(interaction: discord.Interaction):
-    global last_stand_data
-    
-    # Check permission
-    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
-        return await interaction.response.send_message("You cannot use this command.", ephemeral=True)
-    
-    if not last_stand_data["active"]:
-        return await interaction.response.send_message("No active game!", ephemeral=True)
-    
-    # Find winner if any
-    alive_players = [(uid, p) for uid, p in last_stand_data["players"].items() if not p["eliminated"]]
-    
-    embed = discord.Embed(
-        title="🎯 LAST STAND - Game Ended",
-        color=0xFF0000
-    )
-    
-    if len(alive_players) == 1:
-        winner_id, winner = alive_players[0]
-        embed.description = f"🏆 **Winner:** {winner['name']}\n**Lives Remaining:** {winner['lives']}"
-    else:
-        embed.description = "Game ended with multiple survivors or no clear winner."
-    
-    last_stand_data = {
-        "active": False,
-        "players": {},
-        "starting_lives": 3,
-        "pom_logs": []
-    }
-    save_last_stand(last_stand_data)
-    
-    await interaction.response.send_message(embed=embed)
-
-
-# =====================================================
-#                     INVITE COMMAND
-# =====================================================
-
-@tree.command(name="invite", description="Invite a user to your current voice channel")
-async def invite_user(interaction, user: discord.Member):
-    inviter = interaction.user
-
-    if not inviter.voice or not inviter.voice.channel:
-        return await interaction.response.send_message(
-            "You must be in a VC to invite someone.", ephemeral=True
-        )
-
-    vc = inviter.voice.channel
 
     embed = discord.Embed(
-        title="VC Invitation",
-        description=f"{inviter.mention} invited you to join **{vc.name}**\n\nClick here: <#{vc.id}>",
-        color=0x5865F2
+        title="🔥 Last Stand Started",
+        description=f"Survival challenge is live! Everyone starts with **{lives} lives**.",
+        color=0xEF4444
     )
+    embed.set_footer(text="Stay disciplined or get eliminated")
     embed.timestamp = datetime.utcnow()
 
-    try:
-        await user.send(embed=embed)
-        await interaction.response.send_message(
-            f"Sent an invite to {user.mention}!", ephemeral=False
-        )
-    except:
-        await interaction.response.send_message(
-            "User cannot be DMed.", ephemeral=False
-        )
+    await interaction.response.send_message(embed=embed)
 
 
-ALLOWED_ROLES = {
-    1438159005846605926,
-    1423663604070223913,
-    1420803949312610384
-}
+@tree.command(name="laststand_join", description="Join the active Last Stand challenge")
+async def laststand_join(interaction: discord.Interaction):
+    if not last_stand_data.get("active", False):
+        return await interaction.response.send_message("❌ No active Last Stand game.", ephemeral=True)
 
-@tree.command(name="addpoints", description="Add points to a user's team.")
-async def addpoints(interaction: discord.Interaction, user: discord.Member, points: int):
+    uid = str(interaction.user.id)
 
-    # Permission check
-    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
-        return await interaction.response.send_message("You cannot use this command.", ephemeral=True)
+    if uid in last_stand_data["players"]:
+        return await interaction.response.send_message("❌ You already joined.", ephemeral=True)
 
-    # Determine the user's team using your mmh3 logic
-    team_name = calculate_team(user.id)  # You already have this logic earlier
+    last_stand_data["players"][uid] = {
+        "lives": last_stand_data["starting_lives"],
+        "username": interaction.user.display_name
+    }
 
-    # Load current points
-    pts = await get_team_points()
-
-    if team_name == "X":
-        pts["X"] += points
-    else:
-        pts["Y"] += points
-
-    # Save back to GitHub
-    await set_team_points(pts["X"], pts["Y"])
-
-    await interaction.response.send_message(
-        f"Added **{points}** points to **Team {team_name}**!\n\n"
-        f"New totals — X: `{pts['X']}`, Y: `{pts['Y']}`"
-    )
-
-
-@tree.command(name="viewteampoints", description="View current X/Y team scores.")
-async def viewteampoints(interaction: discord.Interaction):
-    pts = await get_team_points()
+    save_last_stand(last_stand_data)
 
     embed = discord.Embed(
-        title="Team Scores",
-        color=0x5865F2
+        title="🛡️ Joined Last Stand",
+        description=f"You have **{last_stand_data['starting_lives']} lives**. Stay sharp.",
+        color=0xF59E0B
     )
-    embed.add_field(name="Team X", value=f"**{pts['X']}**", inline=True)
-    embed.add_field(name="Team Y", value=f"**{pts['Y']}**", inline=True)
+    embed.set_footer(text="One mistake can cost everything")
+    embed.timestamp = datetime.utcnow()
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="laststand_fail", description="[ADMIN] Remove a life from a player")
+@app_commands.describe(user="User who failed")
+async def laststand_fail(interaction: discord.Interaction, user: discord.Member):
+    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+
+    uid = str(user.id)
+
+    if uid not in last_stand_data["players"]:
+        return await interaction.response.send_message("❌ User not in Last Stand.", ephemeral=True)
+
+    last_stand_data["players"][uid]["lives"] -= 1
+
+    lives = last_stand_data["players"][uid]["lives"]
+
+    if lives <= 0:
+        del last_stand_data["players"][uid]
+        result = "☠️ Eliminated"
+    else:
+        result = f"💔 {lives} lives remaining"
+
+    save_last_stand(last_stand_data)
+
+    embed = discord.Embed(
+        title="⚠️ Last Stand Update",
+        description=f"**{user.display_name}** → {result}",
+        color=0xEF4444
+    )
+    embed.set_footer(text="Pressure reveals discipline")
+    embed.timestamp = datetime.utcnow()
 
     await interaction.response.send_message(embed=embed)
 
-async def assign_team_role(member: discord.Member):
-    team = calculate_team(member.id)
-
-    x_role = member.guild.get_role(TEAM_X_ROLE)
-    y_role = member.guild.get_role(TEAM_Y_ROLE)
-
-    # remove both roles in case user switches
-    try:
-        await member.remove_roles(x_role, y_role)
-    except:
-        pass
-
-    if team == "X":
-        await member.add_roles(x_role)
-        return "X"
-    else:
-        await member.add_roles(y_role)
-        return "Y"
-
-@tree.command(name="assignteams", description="Assign perfectly balanced teams deterministically.")
-@app_commands.describe(event_name="Name of the event used in hashing")
-async def assignteams(interaction: discord.Interaction, event_name: str):
-
-    TEAM_X_ROLE = 1443554800405975091
-    TEAM_Y_ROLE = 1443555914534617168
-
-    await interaction.response.send_message("Assigning teams... This may take a few seconds.", ephemeral=True)
-
-    x_count, y_count = await assign_balanced_teams(
-        interaction.guild,
-        event_name,
-        TEAM_X_ROLE,
-        TEAM_Y_ROLE
-    )
-
-    await interaction.followup.send(
-        f"Teams assigned!\n"
-        f"**Team X:** {x_count} members\n"
-        f"**Team Y:** {y_count} members"
-    )
-
-EVENT_CHANNEL_ID = 1424749944882991114
-EVENT_VC_ID = 1438178530620866581
-
-class TeamJoinButton(Button):
-    def __init__(self, event_name: str):
-        super().__init__(
-            label="Join Event",
-            style=discord.ButtonStyle.blurple,
-            custom_id=f"jointeam_{event_name}"   # persists
-        )
-        self.event_name = event_name
-
-    async def callback(self, interaction: discord.Interaction):
-
-        guild = interaction.guild
-        member = interaction.user
-        
-        # Roles
-        x_role = guild.get_role(TEAM_X_ROLE)
-        y_role = guild.get_role(TEAM_Y_ROLE)
-
-        # Already assigned?
-        if x_role in member.roles or y_role in member.roles:
-            return await interaction.response.send_message(
-                "You already have a team!", ephemeral=True
-            )
-
-        # Pick deterministic team
-        team = pick_team_for_user(member.id, self.event_name)
-
-        if team == "A":
-            await member.add_roles(x_role)
-        else:
-            await member.add_roles(y_role)
-
-        await interaction.response.send_message(
-            f"You have been assigned to **Team {team}**!",
-            ephemeral=True
-        )
-
-class TeamJoinView(View):
-    def __init__(self, event_name: str):
-        super().__init__(timeout=None)  # persistent forever
-        self.add_item(TeamJoinButton(event_name))
-
-@tree.command(name="assignteamembed", description="Post a join-event embed with team auto assignment button.")
-@app_commands.describe(event_name="Name of the event used for hashing")
-async def assignteamembed(interaction: discord.Interaction, event_name: str):
-
-    embed = discord.Embed(
-        title="Join The Event!",
-        description=(
-            "Click the button below to join the event.\n\n"
-            "You will automatically be assigned to **Team A** or **Team B** "
-            f"based on a secure per-event hash.\n\n"
-            f"**Event:** `{event_name}`"
-        ),
-        color=0x5865F2
-    )
-
-    await interaction.response.send_message(
-        "Team assignment panel created!",
-        ephemeral=True
-    )
-
-    await interaction.channel.send(
-        embed=embed,
-        view=TeamJoinView(event_name)
-    )
 
 # =====================================================
-#                        REMINDER
+#              BOT RUN
 # =====================================================
 
-EVENT_CHANNEL_ID = 1424749944882991114
-EVENT_VC_ID = 1438178530620866581
-
-@tree.command(name="reminder", description="Schedule a reminder for a specific timestamp.")
-async def reminder(
-    interaction: discord.Interaction,
-    reminder_about: str,
-    timestamp: int
-):
-    """
-    /reminder reminder_about:"Study Session" timestamp:1700000000
-    -> Bot waits until that timestamp - 600 seconds (10 min)
-    -> Sends event reminder message
-    """
-
-    # CURRENT TIME
-    now = int(time_module.time())
-
-    # We want reminder 10 minutes BEFORE the timestamp
-    reminder_time = timestamp - 600  # 600 sec = 10 min
-
-    if reminder_time <= now:
-        return await interaction.response.send_message(
-            "That timestamp is too soon or already passed!",
-            ephemeral=True
-        )
-
-    wait_seconds = reminder_time - now
-
-    await interaction.response.send_message(
-        f"Reminder scheduled! I will send it **10 minutes before** <t:{timestamp}:F>.",
-        ephemeral=True
-    )
-
-    async def reminder_task():
-        await asyncio.sleep(wait_seconds)
-
-        channel = interaction.guild.get_channel(EVENT_CHANNEL_ID)
-        if channel is None:
-            print("[REMINDER] Error: channel not found.")
-            return
-
-        msg = (
-            "@everyone\n"
-            "**🔔 EVENT REMINDER**\n"
-            f"{reminder_about} will start in **10 minutes**, hop in on <#{EVENT_VC_ID}>.\n\n"
-            f"Event time: <t:{timestamp}:F>"
-        )
-
-        try:
-            await channel.send(msg)
-            print(f"[REMINDER] Sent reminder for timestamp {timestamp}")
-        except Exception as e:
-            print(f"[REMINDER ERROR] {e}")
-
-    asyncio.create_task(reminder_task())
-    
-# =====================================================
-#                   RENDER WEB SERVER
-# =====================================================
-
-from aiohttp import web
-
-async def start_webserver():
-    app = web.Application()
-    app.add_routes([web.get("/", lambda r: web.Response(text="Bot Alive"))])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 10000)
-    await site.start()
-    print("Heartbeat running")
-
-# ------------------- GITHUB PERSISTENCE LAYER -----------------------
-
-GH_TOKEN = os.getenv("GH_TOKEN")
-GH_OWNER = os.getenv("GH_REPO_OWNER")
-GH_REPO = os.getenv("GH_REPO_NAME")
-GH_FILE = os.getenv("GH_POINTS_FILE_PATH")
-
-GH_API_BASE = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{GH_FILE}"
-
-# store SHA so updates work correctly
-points_file_sha = None  
-
-
-async def github_get_points():
-    """Load points.json from GitHub or create it if missing."""
-    global points_file_sha
-
-    headers = {
-        "Authorization": f"Bearer {GH_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(GH_API_BASE, headers=headers) as r:
-            if r.status == 200:
-                data = await r.json()
-                points_file_sha = data["sha"]  # required for updating files later
-
-                content = base64.b64decode(data["content"]).decode()
-                try:
-                    points = json.loads(content)
-                    return points
-                except:
-                    return {"X": 0, "Y": 0}
-
-            else:
-                # File does not exist → create default one
-                print("[GITHUB] points.json missing → creating new one...")
-                await github_update_points({"X": 0, "Y": 0})
-                return {"X": 0, "Y": 0}
-
-
-async def github_update_points(points_dict):
-    """Save updated points.json to GitHub."""
-    global points_file_sha
-
-    headers = {
-        "Authorization": f"Bearer {GH_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
-
-    content_bytes = json.dumps(points_dict, indent=4).encode()
-    encoded = base64.b64encode(content_bytes).decode()
-
-    payload = {
-        "message": "update team points",
-        "content": encoded,
-        "sha": points_file_sha
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.put(GH_API_BASE, headers=headers, json=payload) as r:
-            if r.status in [200, 201]:
-                resp = await r.json()
-                points_file_sha = resp["content"]["sha"]
-                print("[GITHUB] Points updated successfully.")
-            else:
-                print("[GITHUB] Failed to update points:", r.status)
-                print(await r.text())
-
-async def get_team_points():
-    """Loads the X/Y team scores from GitHub."""
-    return await github_get_points()
-
-
-async def set_team_points(x_points, y_points):
-    """Writes the new values back to GitHub."""
-    await github_update_points({"X": x_points, "Y": y_points})
-
-
-# =====================================================
-#                     MAIN ENTRY
-# =====================================================
-
-async def main():
-    asyncio.create_task(start_webserver())
-    await bot.start(TOKEN)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+bot.run(TOKEN)
