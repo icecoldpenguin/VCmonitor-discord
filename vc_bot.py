@@ -85,7 +85,7 @@ def save_journal_data(data):
         json.dump(data, f, indent=4)
 
 journal_data = load_journal_data()
-# Structure: { "user_id": { "enabled": bool, "journal_channel_id": int, "last_reminder_sent": "ISO_timestamp" } }
+# Structure: { "user_id": { "enabled": bool, "journal_thread_id": int, "last_reminder_sent": "ISO_timestamp" } }
 
 # =====================================================
 
@@ -299,10 +299,10 @@ async def check_journal_reminders():
             if not data.get("enabled", False):
                 continue
             
-            # Get the journal channel ID
-            journal_channel_id = data.get("journal_channel_id")
-            if not journal_channel_id:
-                print(f"[JOURNAL] User {user_id} has no journal channel set, skipping")
+            # Get the journal thread ID
+            journal_thread_id = data.get("journal_thread_id")
+            if not journal_thread_id:
+                print(f"[JOURNAL] User {user_id} has no journal thread set, skipping")
                 continue
             
             # Check if we already sent a reminder today
@@ -321,22 +321,32 @@ async def check_journal_reminders():
                 except Exception as e:
                     print(f"[JOURNAL] Error parsing last_reminder for {user_id}: {e}")
             
-            # Check if user posted in their journal channel in the last 24 hours
+            # Check if user posted in their journal thread in the last 24 hours
             needs_reminder = False
             
             try:
-                # Get the journal channel
-                channel = bot.get_channel(int(journal_channel_id))
-                if not channel:
-                    print(f"[JOURNAL] Cannot find channel {journal_channel_id} for user {user_id}")
+                # Get the journal thread
+                thread = bot.get_channel(int(journal_thread_id))
+                
+                # If not in cache, try to fetch it
+                if not thread:
+                    try:
+                        thread = await bot.fetch_channel(int(journal_thread_id))
+                    except:
+                        print(f"[JOURNAL] Cannot find thread {journal_thread_id} for user {user_id}")
+                        continue
+                
+                # Check if it's actually a thread
+                if not isinstance(thread, discord.Thread):
+                    print(f"[JOURNAL] Channel {journal_thread_id} is not a thread for user {user_id}")
                     continue
                 
                 # Search for messages from this user in the last 24 hours
                 has_posted = False
-                async for message in channel.history(limit=200, after=twenty_four_hours_ago):
+                async for message in thread.history(limit=200, after=twenty_four_hours_ago):
                     if message.author.id == int(user_id):
                         has_posted = True
-                        print(f"[JOURNAL] User {user_id} posted in channel at {message.created_at}")
+                        print(f"[JOURNAL] User {user_id} posted in thread at {message.created_at}")
                         break
                 
                 if not has_posted:
@@ -346,7 +356,7 @@ async def check_journal_reminders():
                     print(f"[JOURNAL] User {user_id} has posted in the last 24 hours, no reminder needed")
                     
             except discord.Forbidden:
-                print(f"[JOURNAL] No permission to read channel {journal_channel_id}")
+                print(f"[JOURNAL] No permission to read thread {journal_thread_id}")
                 continue
             except Exception as e:
                 print(f"[JOURNAL] Error checking messages for user {user_id}: {e}")
@@ -356,10 +366,13 @@ async def check_journal_reminders():
                 try:
                     user = await bot.fetch_user(int(user_id))
                     
+                    # Get thread name for the reminder
+                    thread_mention = f"<#{journal_thread_id}>" if thread else "your journal thread"
+                    
                     embed = discord.Embed(
                         title="📔 Journal Reminder",
                         description=(
-                            f"Hey! It looks like you haven't posted in <#{journal_channel_id}> in the last 24 hours.\n\n"
+                            f"Hey! It looks like you haven't posted in {thread_mention} in the last 24 hours.\n\n"
                             "Take a moment to reflect on your day and write down your thoughts! 💭"
                         ),
                         color=0x5865F2,
@@ -459,24 +472,68 @@ async def on_voice_state_update(member, before, after):
 @tree.command(name="remindjournal", description="Enable/disable daily journal reminders at 9 PM IST")
 @app_commands.describe(
     enable="True to enable reminders, False to disable",
-    journal_channel="The channel where you post your journal entries"
+    journal_thread="The thread where you post your journal entries (right-click thread > Copy ID)"
 )
-async def remindjournal(interaction: discord.Interaction, enable: bool, journal_channel: discord.TextChannel = None):
+async def remindjournal(interaction: discord.Interaction, enable: bool, journal_thread: str = None):
     user_id = str(interaction.user.id)
     
     if enable:
-        # Must provide a channel when enabling
-        if not journal_channel:
+        # Must provide a thread ID when enabling
+        if not journal_thread:
             return await interaction.response.send_message(
-                "❌ You must specify a journal channel when enabling reminders!\n"
-                "Example: `/remindjournal enable:True journal_channel:#my-journal`",
+                "❌ You must specify a journal thread ID when enabling reminders!\n\n"
+                "**How to get your thread ID:**\n"
+                "1. Right-click on your journal thread\n"
+                "2. Click 'Copy ID' (you need Developer Mode enabled)\n"
+                "3. Use the command: `/remindjournal enable:True journal_thread:YOUR_THREAD_ID`\n\n"
+                "**Enable Developer Mode:** User Settings > App Settings > Advanced > Developer Mode",
+                ephemeral=True
+            )
+        
+        # Validate thread ID
+        try:
+            thread_id = int(journal_thread)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Invalid thread ID! Please provide a valid numeric thread ID.",
+                ephemeral=True
+            )
+        
+        # Try to fetch the thread to verify it exists
+        try:
+            thread = bot.get_channel(thread_id)
+            if not thread:
+                thread = await bot.fetch_channel(thread_id)
+            
+            # Verify it's actually a thread
+            if not isinstance(thread, discord.Thread):
+                return await interaction.response.send_message(
+                    "❌ That ID is not a thread! Please provide a valid thread ID.",
+                    ephemeral=True
+                )
+            
+            thread_name = thread.name
+            
+        except discord.NotFound:
+            return await interaction.response.send_message(
+                "❌ Thread not found! Make sure the thread ID is correct and the bot has access to it.",
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "❌ I don't have permission to access that thread!",
+                ephemeral=True
+            )
+        except Exception as e:
+            return await interaction.response.send_message(
+                f"❌ Error accessing thread: {e}",
                 ephemeral=True
             )
         
         # Enable reminders for this user
         journal_data[user_id] = {
             "enabled": True,
-            "journal_channel_id": journal_channel.id,
+            "journal_thread_id": thread_id,
             "last_reminder_sent": None
         }
         
@@ -484,9 +541,9 @@ async def remindjournal(interaction: discord.Interaction, enable: bool, journal_
         
         await interaction.response.send_message(
             f"✅ Journal reminders enabled!\n\n"
-            f"**Monitoring channel:** {journal_channel.mention}\n"
+            f"**Monitoring thread:** {thread_name} (<#{thread_id}>)\n"
             f"**Reminder time:** 9:00 PM IST daily\n\n"
-            f"You'll receive a reminder if you haven't posted in {journal_channel.mention} "
+            f"You'll receive a reminder if you haven't posted in your journal thread "
             f"in the last 24 hours.",
             ephemeral=True
         )
@@ -508,8 +565,11 @@ async def journalstatus(interaction: discord.Interaction):
     
     if user_id not in journal_data:
         return await interaction.response.send_message(
-            "You don't have journal reminders set up yet!\n"
-            "Use `/remindjournal enable:True journal_channel:#your-channel` to get started.",
+            "You don't have journal reminders set up yet!\n\n"
+            "**To set up:**\n"
+            "1. Right-click on your journal thread\n"
+            "2. Click 'Copy ID'\n"
+            "3. Run: `/remindjournal enable:True journal_thread:YOUR_THREAD_ID`",
             ephemeral=True
         )
     
@@ -526,11 +586,20 @@ async def journalstatus(interaction: discord.Interaction):
         inline=True
     )
     
-    channel_id = data.get("journal_channel_id")
-    if channel_id:
+    thread_id = data.get("journal_thread_id")
+    if thread_id:
+        # Try to get thread name
+        try:
+            thread = bot.get_channel(int(thread_id))
+            if not thread:
+                thread = await bot.fetch_channel(int(thread_id))
+            thread_display = f"{thread.name} (<#{thread_id}>)"
+        except:
+            thread_display = f"<#{thread_id}>"
+        
         embed.add_field(
-            name="Journal Channel",
-            value=f"<#{channel_id}>",
+            name="Journal Thread",
+            value=thread_display,
             inline=True
         )
     
@@ -547,14 +616,17 @@ async def journalstatus(interaction: discord.Interaction):
             pass
     
     # Check if they've posted in the last 24 hours
-    if channel_id and data.get("enabled"):
+    if thread_id and data.get("enabled"):
         try:
-            channel = bot.get_channel(int(channel_id))
-            if channel:
+            thread = bot.get_channel(int(thread_id))
+            if not thread:
+                thread = await bot.fetch_channel(int(thread_id))
+            
+            if thread and isinstance(thread, discord.Thread):
                 twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
                 has_posted = False
                 
-                async for message in channel.history(limit=200, after=twenty_four_hours_ago):
+                async for message in thread.history(limit=200, after=twenty_four_hours_ago):
                     if message.author.id == interaction.user.id:
                         has_posted = True
                         embed.add_field(
