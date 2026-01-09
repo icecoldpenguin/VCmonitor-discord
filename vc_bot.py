@@ -1340,14 +1340,21 @@ async def github_set_cf_data(data_dict):
     payload = {
         "message": "update codeforces state",
         "content": encoded,
-        "sha": cf_file_sha
     }
+
+    if cf_file_sha:
+        payload["sha"] = cf_file_sha
 
     async with aiohttp.ClientSession() as session:
         async with session.put(GH_CF_API, headers=headers, json=payload) as r:
-            resp = await r.json()
-            cf_file_sha = resp["content"]["sha"]
+            text = await r.text()
 
+            if r.status not in (200, 201):
+                print("[CODEFORCES][GITHUB ERROR]", r.status, text)
+                raise RuntimeError(f"GitHub write failed: {r.status}")
+
+            resp = json.loads(text)
+            cf_file_sha = resp["content"]["sha"]
 
 # ---------- HELPERS ----------
 def parse_contest_type(name: str):
