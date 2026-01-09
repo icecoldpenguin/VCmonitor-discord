@@ -1276,6 +1276,107 @@ async def set_team_points(x_points, y_points):
     """Writes the new values back to GitHub."""
     await github_update_points({"X": x_points, "Y": y_points})
 
+# ================= CODEFORCES UPDATER =================
+
+CODEFORCES_FILE = "codeforces.json"
+CODEFORCES_API = "https://codeforces.com/api/contest.list"
+
+def load_cf_data():
+    try:
+        with open(CODEFORCES_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {
+            "channels": [],
+            "last_contest_id": None
+        }
+
+def save_cf_data(data):
+    with open(CODEFORCES_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+cf_data = load_cf_data()
+
+def parse_contest_type(name: str):
+    name = name.lower()
+    if "div. 1" in name:
+        return "Div. 1"
+    if "div. 2" in name:
+        return "Div. 2"
+    if "educational" in name:
+        return "Educational"
+    if "global" in name:
+        return "Global"
+    return "Rated"
+
+def format_duration(seconds):
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    return f"{h}:{m:02d} hours"
+
+async def fetch_cf_contests():
+    async with aiohttp.ClientSession() as session:
+        async with session.get(CODEFORCES_API) as r:
+            data = await r.json()
+            return data["result"]
+
+@tasks.loop(minutes=1)
+async def codeforces_watcher():
+    contests = await fetch_cf_contests()
+    upcoming = [c for c in contests if c["phase"] == "BEFORE"]
+
+    if not upcoming:
+        return
+
+    upcoming.sort(key=lambda c: c["startTimeSeconds"])
+    contest = upcoming[0]
+
+    if cf_data["last_contest_id"] == contest["id"]:
+        return
+
+    cf_data["last_contest_id"] = contest["id"]
+    save_cf_data(cf_data)
+
+    embed = discord.Embed(
+        title="🏆 Team Codeforcers",
+        description=f"**{contest['name']}**",
+        color=0x1f8b4c
+    )
+
+    embed.add_field(name="📌 Type", value=parse_contest_type(contest["name"]), inline=True)
+    embed.add_field(name="🕒 Starts", value=f"<t:{contest['startTimeSeconds']}:F>", inline=True)
+    embed.add_field(name="⏳ Duration", value=format_duration(contest["durationSeconds"]), inline=True)
+    embed.add_field(
+        name="🔗 Contest Link",
+        value=f"https://codeforces.com/contest/{contest['id']}",
+        inline=False
+    )
+
+    embed.set_footer(text="Telugu Study Buddies")
+
+    for ch_id in cf_data["channels"]:
+        channel = bot.get_channel(ch_id)
+        if channel:
+            await channel.send(embed=embed)
+
+@tree.command(name="setup", description="Setup automated updates")
+@app_commands.describe(type="Update type", channel="Target channel")
+async def setup(interaction: discord.Interaction, type: str, channel: discord.TextChannel):
+    if type.lower() != "codeforces":
+        return await interaction.response.send_message("❌ Invalid type", ephemeral=True)
+
+    if channel.id not in cf_data["channels"]:
+        cf_data["channels"].append(channel.id)
+        save_cf_data(cf_data)
+
+    if not codeforces_watcher.is_running():
+        codeforces_watcher.start()
+
+    await interaction.response.send_message(
+        f"✅ Codeforces updates enabled in {channel.mention}",
+        ephemeral=True
+    )
+
 
 # =====================================================
 #                     MAIN ENTRY
