@@ -1448,10 +1448,12 @@ async def codeforces_watcher():
 )
 async def setup(interaction: discord.Interaction, type: str, channel: discord.TextChannel):
 
+    # 🔑 VERY IMPORTANT
+    await interaction.response.defer(ephemeral=True)
+
     if type.lower() != "codeforces":
-        return await interaction.response.send_message(
-            "❌ Invalid type. Use `codeforces`.",
-            ephemeral=True
+        return await interaction.followup.send(
+            "❌ Invalid type. Use `codeforces`."
         )
 
     cf_data = await github_get_cf_data()
@@ -1463,12 +1465,9 @@ async def setup(interaction: discord.Interaction, type: str, channel: discord.Te
     if not codeforces_watcher.is_running():
         codeforces_watcher.start()
 
-    await interaction.response.send_message(
-        f"✅ Codeforces updates enabled in {channel.mention}",
-        ephemeral=True
+    await interaction.followup.send(
+        f"✅ Codeforces updates enabled in {channel.mention}"
     )
-
-
 
 # =====================================================
 #                     MAIN ENTRY
