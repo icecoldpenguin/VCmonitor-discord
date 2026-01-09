@@ -1476,14 +1476,11 @@ async def setup(interaction: discord.Interaction, type: str, channel: discord.Te
         )
 
     except Exception as e:
-        # 🔥 THIS IS THE IMPORTANT PART
         await interaction.followup.send(
-            "❌ Setup failed. Check bot logs.\n"
+            "❌ Setup failed.\n"
             f"```{type(e).__name__}: {e}```"
         )
-        raise  # so Render logs show it
-f"✅ Codeforces updates enabled in {channel.mention}"
-    )
+        raise
 
 # =====================================================
 #                     MAIN ENTRY
