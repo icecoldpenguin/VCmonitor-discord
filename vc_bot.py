@@ -1276,27 +1276,80 @@ async def set_team_points(x_points, y_points):
     """Writes the new values back to GitHub."""
     await github_update_points({"X": x_points, "Y": y_points})
 
-# ================= CODEFORCES UPDATER =================
+# ================= CODEFORCES CHANNEL UPDATER =================
 
-CODEFORCES_FILE = "codeforces.json"
+import aiohttp
+import base64
+import json
+import os
+import discord
+from discord.ext import tasks
+from discord import app_commands
+
+# ---------- CONFIG ----------
 CODEFORCES_API = "https://codeforces.com/api/contest.list"
 
-def load_cf_data():
-    try:
-        with open(CODEFORCES_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {
-            "channels": [],
-            "last_contest_id": None
-        }
+GH_CF_FILE = os.getenv("GH_CF_FILE_PATH")
+GH_OWNER = os.getenv("GH_REPO_OWNER")
+GH_REPO = os.getenv("GH_REPO_NAME")
+GH_TOKEN = os.getenv("GH_TOKEN")
 
-def save_cf_data(data):
-    with open(CODEFORCES_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+GH_CF_API = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{GH_CF_FILE}"
 
-cf_data = load_cf_data()
+cf_file_sha = None
 
+
+# ---------- GITHUB STORAGE ----------
+async def github_get_cf_data():
+    global cf_file_sha
+
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(GH_CF_API, headers=headers) as r:
+            if r.status == 200:
+                data = await r.json()
+                cf_file_sha = data["sha"]
+                content = base64.b64decode(data["content"]).decode()
+                return json.loads(content)
+
+            # File missing → create it
+            default = {
+                "channels": [],
+                "last_contest_id": None
+            }
+            await github_set_cf_data(default)
+            return default
+
+
+async def github_set_cf_data(data_dict):
+    global cf_file_sha
+
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    encoded = base64.b64encode(
+        json.dumps(data_dict, indent=4).encode()
+    ).decode()
+
+    payload = {
+        "message": "update codeforces state",
+        "content": encoded,
+        "sha": cf_file_sha
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.put(GH_CF_API, headers=headers, json=payload) as r:
+            resp = await r.json()
+            cf_file_sha = resp["content"]["sha"]
+
+
+# ---------- HELPERS ----------
 def parse_contest_type(name: str):
     name = name.lower()
     if "div. 1" in name:
@@ -1309,22 +1362,31 @@ def parse_contest_type(name: str):
         return "Global"
     return "Rated"
 
+
 def format_duration(seconds):
     h = seconds // 3600
     m = (seconds % 3600) // 60
     return f"{h}:{m:02d} hours"
 
-async def fetch_cf_contests():
+
+def registration_link(contest_id: int):
+    return f"https://codeforces.com/enter?back=%2FcontestRegistration%2F{contest_id}"
+
+
+async def fetch_contests():
     async with aiohttp.ClientSession() as session:
         async with session.get(CODEFORCES_API) as r:
             data = await r.json()
             return data["result"]
 
+
+# ---------- WATCHER ----------
 @tasks.loop(minutes=1)
 async def codeforces_watcher():
-    contests = await fetch_cf_contests()
-    upcoming = [c for c in contests if c["phase"] == "BEFORE"]
+    cf_data = await github_get_cf_data()
+    contests = await fetch_contests()
 
+    upcoming = [c for c in contests if c["phase"] == "BEFORE"]
     if not upcoming:
         return
 
@@ -1335,20 +1397,38 @@ async def codeforces_watcher():
         return
 
     cf_data["last_contest_id"] = contest["id"]
-    save_cf_data(cf_data)
+    await github_set_cf_data(cf_data)
 
     embed = discord.Embed(
         title="🏆 Team Codeforcers",
-        description=f"**{contest['name']}**",
+        description=(
+            f"**{contest['name']}**\n\n"
+            "⚡ One-click registration. No excuses."
+        ),
         color=0x1f8b4c
     )
 
-    embed.add_field(name="📌 Type", value=parse_contest_type(contest["name"]), inline=True)
-    embed.add_field(name="🕒 Starts", value=f"<t:{contest['startTimeSeconds']}:F>", inline=True)
-    embed.add_field(name="⏳ Duration", value=format_duration(contest["durationSeconds"]), inline=True)
     embed.add_field(
-        name="🔗 Contest Link",
-        value=f"https://codeforces.com/contest/{contest['id']}",
+        name="📌 Type",
+        value=parse_contest_type(contest["name"]),
+        inline=True
+    )
+
+    embed.add_field(
+        name="🕒 Starts",
+        value=f"<t:{contest['startTimeSeconds']}:F>",
+        inline=True
+    )
+
+    embed.add_field(
+        name="⏳ Duration",
+        value=format_duration(contest["durationSeconds"]),
+        inline=True
+    )
+
+    embed.add_field(
+        name="📝 Register Here",
+        value=registration_link(contest["id"]),
         inline=False
     )
 
@@ -1359,15 +1439,26 @@ async def codeforces_watcher():
         if channel:
             await channel.send(embed=embed)
 
-@tree.command(name="setup", description="Setup automated updates")
-@app_commands.describe(type="Update type", channel="Target channel")
+
+# ---------- SLASH COMMAND ----------
+@bot.tree.command(name="setup", description="Setup automated channel updates")
+@app_commands.describe(
+    type="Type of updates (use: codeforces)",
+    channel="Channel to send updates"
+)
 async def setup(interaction: discord.Interaction, type: str, channel: discord.TextChannel):
+
     if type.lower() != "codeforces":
-        return await interaction.response.send_message("❌ Invalid type", ephemeral=True)
+        return await interaction.response.send_message(
+            "❌ Invalid type. Use `codeforces`.",
+            ephemeral=True
+        )
+
+    cf_data = await github_get_cf_data()
 
     if channel.id not in cf_data["channels"]:
         cf_data["channels"].append(channel.id)
-        save_cf_data(cf_data)
+        await github_set_cf_data(cf_data)
 
     if not codeforces_watcher.is_running():
         codeforces_watcher.start()
@@ -1376,6 +1467,7 @@ async def setup(interaction: discord.Interaction, type: str, channel: discord.Te
         f"✅ Codeforces updates enabled in {channel.mention}",
         ephemeral=True
     )
+
 
 
 # =====================================================
