@@ -1406,7 +1406,7 @@ def format_duration(seconds):
 
 
 def registration_link(contest_id: int):
-    return f"https://codeforces.com/enter?back=%2FcontestRegistration%2F{contest_id}"
+    return f"https://codeforces.com/contestRegistration/{contest_id}"
 
 
 async def fetch_contests():
