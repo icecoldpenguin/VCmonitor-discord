@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -1310,20 +1313,44 @@ async def github_get_cf_data():
 
     async with aiohttp.ClientSession() as session:
         async with session.get(GH_CF_API, headers=headers) as r:
+            text = await r.text()
+
+            # ---------- FILE EXISTS ----------
             if r.status == 200:
-                data = await r.json()
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    raise RuntimeError(
+                        f"GitHub returned invalid JSON (200):\n{text}"
+                    )
+
                 cf_file_sha = data["sha"]
-                content = base64.b64decode(data["content"]).decode()
-                return json.loads(content)
 
-            # File missing → create it
-            default = {
-                "channels": [],
-                "last_contest_id": None
-            }
-            await github_set_cf_data(default)
-            return default
+                try:
+                    content = base64.b64decode(data["content"]).decode()
+                    return json.loads(content)
+                except Exception:
+                    # file exists but is empty/corrupt → reset safely
+                    default = {
+                        "channels": [],
+                        "last_contest_id": None
+                    }
+                    await github_set_cf_data(default)
+                    return default
 
+            # ---------- FILE DOES NOT EXIST ----------
+            if r.status == 404:
+                default = {
+                    "channels": [],
+                    "last_contest_id": None
+                }
+                await github_set_cf_data(default)
+                return default
+
+            # ---------- ANY OTHER RESPONSE ----------
+            raise RuntimeError(
+                f"GitHub GET failed ({r.status})\n{text}"
+            )
 
 async def github_set_cf_data(data_dict):
     global cf_file_sha
@@ -1339,7 +1366,7 @@ async def github_set_cf_data(data_dict):
 
     payload = {
         "message": "update codeforces state",
-        "content": encoded,
+        "content": encoded
     }
 
     if cf_file_sha:
@@ -1347,14 +1374,16 @@ async def github_set_cf_data(data_dict):
 
     async with aiohttp.ClientSession() as session:
         async with session.put(GH_CF_API, headers=headers, json=payload) as r:
-            text = await r.text()
 
             if r.status not in (200, 201):
-                print("[CODEFORCES][GITHUB ERROR]", r.status, text)
-                raise RuntimeError(f"GitHub write failed: {r.status}")
+                text = await r.text()
+                raise RuntimeError(
+                    f"GitHub PUT failed ({r.status})\n{text}"
+                )
 
-            resp = json.loads(text)
+            resp = await r.json()
             cf_file_sha = resp["content"]["sha"]
+
 
 # ---------- HELPERS ----------
 def parse_contest_type(name: str):
@@ -1410,7 +1439,7 @@ async def codeforces_watcher():
         title="🏆 Team Codeforcers",
         description=(
             f"**{contest['name']}**\n\n"
-            "⚡ One-click registration. No excuses."
+            "⚡ One-click registration."
         ),
         color=0x1f8b4c
     )
@@ -1446,7 +1475,8 @@ async def codeforces_watcher():
         if channel:
             await channel.send(embed=embed)
 
-#--------------------- SETUP -----------------------
+
+# ---------- SLASH COMMAND ----------
 @bot.tree.command(name="setup", description="Setup automated channel updates")
 @app_commands.describe(
     type="Type of updates (use: codeforces)",
@@ -1454,33 +1484,40 @@ async def codeforces_watcher():
 )
 async def setup(interaction: discord.Interaction, type: str, channel: discord.TextChannel):
 
+    print("[SETUP] start")
     await interaction.response.defer(ephemeral=True)
+    print("[SETUP] deferred")
 
     try:
         if type.lower() != "codeforces":
-            return await interaction.followup.send(
-                "❌ Invalid type. Use `codeforces`."
-            )
+            await interaction.followup.send("❌ Invalid type. Use `codeforces`.")
+            return
 
+        print("[SETUP] reading github")
         cf_data = await github_get_cf_data()
+        print("[SETUP] github read OK:", cf_data)
 
         if channel.id not in cf_data["channels"]:
             cf_data["channels"].append(channel.id)
+            print("[SETUP] writing github")
             await github_set_cf_data(cf_data)
+            print("[SETUP] github write OK")
 
         if not codeforces_watcher.is_running():
             codeforces_watcher.start()
+            print("[SETUP] watcher started")
 
         await interaction.followup.send(
             f"✅ Codeforces updates enabled in {channel.mention}"
         )
+        print("[SETUP] done")
 
     except Exception as e:
+        print("[SETUP] ERROR:", repr(e))
         await interaction.followup.send(
-            "❌ Setup failed.\n"
-            f"```{type(e).__name__}: {e}```"
+            f"❌ Setup failed:\n```{type(e).__name__}: {e}```"
         )
-        raise
+
 
 # =====================================================
 #                     MAIN ENTRY
