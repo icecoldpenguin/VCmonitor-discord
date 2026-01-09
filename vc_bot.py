@@ -1439,8 +1439,7 @@ async def codeforces_watcher():
         if channel:
             await channel.send(embed=embed)
 
-
-# ---------- SLASH COMMAND ----------
+#--------------------- SETUP -----------------------
 @bot.tree.command(name="setup", description="Setup automated channel updates")
 @app_commands.describe(
     type="Type of updates (use: codeforces)",
@@ -1448,25 +1447,35 @@ async def codeforces_watcher():
 )
 async def setup(interaction: discord.Interaction, type: str, channel: discord.TextChannel):
 
-    # 🔑 VERY IMPORTANT
     await interaction.response.defer(ephemeral=True)
 
-    if type.lower() != "codeforces":
-        return await interaction.followup.send(
-            "❌ Invalid type. Use `codeforces`."
+    try:
+        if type.lower() != "codeforces":
+            return await interaction.followup.send(
+                "❌ Invalid type. Use `codeforces`."
+            )
+
+        cf_data = await github_get_cf_data()
+
+        if channel.id not in cf_data["channels"]:
+            cf_data["channels"].append(channel.id)
+            await github_set_cf_data(cf_data)
+
+        if not codeforces_watcher.is_running():
+            codeforces_watcher.start()
+
+        await interaction.followup.send(
+            f"✅ Codeforces updates enabled in {channel.mention}"
         )
 
-    cf_data = await github_get_cf_data()
-
-    if channel.id not in cf_data["channels"]:
-        cf_data["channels"].append(channel.id)
-        await github_set_cf_data(cf_data)
-
-    if not codeforces_watcher.is_running():
-        codeforces_watcher.start()
-
-    await interaction.followup.send(
-        f"✅ Codeforces updates enabled in {channel.mention}"
+    except Exception as e:
+        # 🔥 THIS IS THE IMPORTANT PART
+        await interaction.followup.send(
+            "❌ Setup failed. Check bot logs.\n"
+            f"```{type(e).__name__}: {e}```"
+        )
+        raise  # so Render logs show it
+f"✅ Codeforces updates enabled in {channel.mention}"
     )
 
 # =====================================================
