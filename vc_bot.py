@@ -1653,6 +1653,11 @@ async def leetcode_watcher():
     except Exception as e:
         dbg("ERROR", repr(e))
 
+@leetcode_watcher.before_loop
+async def before_leetcode():
+    await bot.wait_until_ready()
+    print("[LEETCODE] Bot ready, watcher will start")
+
 # ---------- SLASH COMMAND ----------
 @bot.tree.command(name="setup", description="Setup automated competitive programming updates")
 @app_commands.describe(
