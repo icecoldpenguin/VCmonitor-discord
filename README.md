@@ -162,6 +162,7 @@ pip install -r requirements.txt
 
 - Create the required json files
 - Code will automatically create the schema for them, so don't bother.
+- Create a `.env` file and use this format
 
 ```env
 TOKEN=your_discord_bot_token
@@ -176,6 +177,7 @@ GH_LC_FILE_PATH=leetcode.json
 ```
 
 > Create a github token from the settings, if you don't know how, learn it.
+> Same goes for a discord token, make sure you put this in an env file and not a random txt file.
 > ⚠️ The GitHub token must have **repository contents read/write permissions**.
 
 ---
@@ -199,8 +201,9 @@ python vc_bot.py
 You should see logs confirming:
 
 * bot login
-* task startup
-* successful API connections
+* task startup (If journal reminders are setup)
+* successful API connections (use `/setup` on discord to log this)
+* This bot auto-logs most of the errors during runtime, enjoy c:
 
 ---
 
@@ -208,3 +211,5 @@ You should see logs confirming:
 This project is pretty much a work in development, I plan to add more "games" to it, paired with features such as server moderation, voice tracking, using SQL instead of updating stuff directly on this github repo, and hopefully creating a good looking leaderboard using Pillow, and no i don't plan to use AI for these. 
 
 Feel free to fork, extend, or adapt it to your own communities 🚀
+If you would like to suggest any features, PLEASE do so!
+If you are willing to write any code, please send a pull request and I'll happily merge it.
