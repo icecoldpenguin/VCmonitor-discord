@@ -1552,7 +1552,7 @@ LEETCODE_DAILY_QUERY = {
           title
           titleSlug
           difficulty
-          frontendQuestionId
+          questionId
         }
       }
     }
@@ -1612,9 +1612,10 @@ async def leetcode_watcher():
 
         embed = discord.Embed(
             title="🧠 LeetCode Daily Challenge",
-            description=f"**{q['frontendQuestionId']}. {q['title']}**",
+            description=f"**{q['questionId']}. {q['title']}**",
             color=0xf89f1b
         )
+
 
         embed.add_field(
             name="⚡ Difficulty",
