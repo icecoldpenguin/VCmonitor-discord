@@ -16,6 +16,7 @@ import json
 import hashlib
 import time as time_module
 import pytz
+from typing import Literal
 
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")
@@ -1296,6 +1297,8 @@ GH_CF_FILE = os.getenv("GH_CF_FILE_PATH")
 GH_OWNER = os.getenv("GH_REPO_OWNER")
 GH_REPO = os.getenv("GH_REPO_NAME")
 GH_TOKEN = os.getenv("GH_TOKEN")
+GH_LC_FILE = os.getenv("GH_LC_FILE_PATH")
+GH_LC_API = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{GH_LC_FILE}"
 
 GH_CF_API = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{GH_CF_FILE}"
 
@@ -1383,6 +1386,68 @@ async def github_set_cf_data(data_dict):
 
             resp = await r.json()
             cf_file_sha = resp["content"]["sha"]
+
+# ================= LEETCODE STORAGE =================
+
+lc_file_sha = None
+
+
+async def github_get_lc_data():
+    global lc_file_sha
+
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(GH_LC_API, headers=headers) as r:
+            text = await r.text()
+
+            if r.status == 200:
+                data = json.loads(text)
+                lc_file_sha = data["sha"]
+                content = base64.b64decode(data["content"]).decode()
+                return json.loads(content)
+
+            if r.status == 404:
+                default = {
+                    "channels": [],
+                    "last_question_slug": None
+                }
+                await github_set_lc_data(default)
+                return default
+
+            raise RuntimeError(f"GitHub LC GET failed ({r.status})\n{text}")
+
+
+async def github_set_lc_data(data_dict):
+    global lc_file_sha
+
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    encoded = base64.b64encode(
+        json.dumps(data_dict, indent=4).encode()
+    ).decode()
+
+    payload = {
+        "message": "update leetcode state",
+        "content": encoded
+    }
+
+    if lc_file_sha:
+        payload["sha"] = lc_file_sha
+
+    async with aiohttp.ClientSession() as session:
+        async with session.put(GH_LC_API, headers=headers, json=payload) as r:
+            if r.status not in (200, 201):
+                raise RuntimeError(await r.text())
+
+            resp = await r.json()
+            lc_file_sha = resp["content"]["sha"]
 
 
 # ---------- HELPERS ----------
@@ -1475,49 +1540,116 @@ async def codeforces_watcher():
         if channel:
             await channel.send(embed=embed)
 
+LEETCODE_GRAPHQL = "https://leetcode.com/graphql"
+
+LEETCODE_DAILY_QUERY = {
+    "query": """
+    query questionOfToday {
+      activeDailyCodingChallengeQuestion {
+        date
+        link
+        question {
+          title
+          titleSlug
+          difficulty
+          frontendQuestionId
+        }
+      }
+    }
+    """
+}
+
+async def fetch_leetcode_daily():
+    async with aiohttp.ClientSession() as session:
+        async with session.post(LEETCODE_GRAPHQL, json=LEETCODE_DAILY_QUERY) as r:
+            data = await r.json()
+            return data["data"]["activeDailyCodingChallengeQuestion"]
+
+
+@tasks.loop(minutes=10)
+async def leetcode_watcher():
+    lc_data = await github_get_lc_data()
+    daily = await fetch_leetcode_daily()
+
+    slug = daily["question"]["titleSlug"]
+    if lc_data["last_question_slug"] == slug:
+        return
+
+    lc_data["last_question_slug"] = slug
+    await github_set_lc_data(lc_data)
+
+    q = daily["question"]
+
+    embed = discord.Embed(
+        title="🧠 LeetCode Daily Challenge",
+        description=f"**{q['frontendQuestionId']}. {q['title']}**",
+        color=0xf89f1b
+    )
+
+    embed.add_field(name="⚡ Difficulty", value=q["difficulty"], inline=True)
+    embed.add_field(
+        name="🔗 Solve Here",
+        value=f"https://leetcode.com{daily['link']}",
+        inline=False
+    )
+
+    embed.set_footer(text="Daily grind. No excuses.")
+
+    for ch_id in lc_data["channels"]:
+        channel = bot.get_channel(ch_id)
+        if channel:
+            await channel.send(embed=embed)
 
 # ---------- SLASH COMMAND ----------
-@bot.tree.command(name="setup", description="Setup automated channel updates")
+@bot.tree.command(name="setup", description="Setup automated competitive programming updates")
 @app_commands.describe(
-    type="Type of updates (use: codeforces)",
+    update_type="Type of updates",
     channel="Channel to send updates"
 )
-async def setup(interaction: discord.Interaction, type: str, channel: discord.TextChannel):
-
-    print("[SETUP] start")
+@app_commands.choices(update_type=[
+    app_commands.Choice(name="Codeforces", value="codeforces"),
+    app_commands.Choice(name="LeetCode", value="leetcode"),
+])
+async def setup(
+    interaction: discord.Interaction,
+    update_type: app_commands.Choice[str],
+    channel: discord.TextChannel
+):
     await interaction.response.defer(ephemeral=True)
-    print("[SETUP] deferred")
 
     try:
-        if type.lower() != "codeforces":
-            await interaction.followup.send("❌ Invalid type. Use `codeforces`.")
-            return
+        if update_type.value == "codeforces":
+            cf_data = await github_get_cf_data()
 
-        print("[SETUP] reading github")
-        cf_data = await github_get_cf_data()
-        print("[SETUP] github read OK:", cf_data)
+            if channel.id not in cf_data["channels"]:
+                cf_data["channels"].append(channel.id)
+                await github_set_cf_data(cf_data)
 
-        if channel.id not in cf_data["channels"]:
-            cf_data["channels"].append(channel.id)
-            print("[SETUP] writing github")
-            await github_set_cf_data(cf_data)
-            print("[SETUP] github write OK")
+            if not codeforces_watcher.is_running():
+                codeforces_watcher.start()
 
-        if not codeforces_watcher.is_running():
-            codeforces_watcher.start()
-            print("[SETUP] watcher started")
+            await interaction.followup.send(
+                f"✅ **Codeforces updates enabled** in {channel.mention}"
+            )
 
-        await interaction.followup.send(
-            f"✅ Codeforces updates enabled in {channel.mention}"
-        )
-        print("[SETUP] done")
+        elif update_type.value == "leetcode":
+            lc_data = await github_get_lc_data()
+
+            if channel.id not in lc_data["channels"]:
+                lc_data["channels"].append(channel.id)
+                await github_set_lc_data(lc_data)
+
+            if not leetcode_watcher.is_running():
+                leetcode_watcher.start()
+
+            await interaction.followup.send(
+                f"✅ **LeetCode updates enabled** in {channel.mention}"
+            )
 
     except Exception as e:
-        print("[SETUP] ERROR:", repr(e))
         await interaction.followup.send(
             f"❌ Setup failed:\n```{type(e).__name__}: {e}```"
         )
-
 
 # =====================================================
 #                     MAIN ENTRY
