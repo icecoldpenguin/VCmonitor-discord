@@ -1588,6 +1588,9 @@ async def fetch_leetcode_daily():
 
             return challenge
 
+def dbg(tag, msg):
+    print(f"[LEETCODE:{tag}] {msg}")
+
 @tasks.loop(minutes=10)
 async def leetcode_watcher():
     dbg("START", "Watcher tick started")
