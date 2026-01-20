@@ -1,8 +1,7 @@
 An absolutely elegant discord bot for a random server.
+I'll be honest, 80% of code here is written by AI. But atleast I learnt the basics.
 
-I'll be honest, 80% of code here is written by AI.
-
-This bot automates voice enforcement, journaling habits, team systems, competitive programming updates, reminders, and mini-games.
+This bot automates voice enforcement, journaling habits, team systems, competitive programming updates, reminders, and mini-games. Use it if you've a study server.
 
 ---
 
@@ -18,21 +17,22 @@ This bot automates voice enforcement, journaling habits, team systems, competiti
 
 * **Discord API**
 * **Codeforces API** (contest updates)
-* **LeetCode GraphQL API** (daily challenge updates)
+* **LeetCode GraphQL API** (leetcode daily challenge updates)
 * **GitHub REST API** (persistent state storage)
+> OH, why did'nt you use SQL? Either I did'nt figure out how to on my free server, or it required premium to do so.
 
 ### Libraries
 
 * `aiohttp` – async HTTP requests
-* `python-dotenv` – environment variable management
-* `pytz` – timezone handling (IST support)
+* `python-dotenv` – environment variable management (we all lv privacy <3 )
+* `pytz` – timezone handling
 * `hashlib`, `mmh3` – deterministic hashing
-* `json` – state serialization
+* `json` – state serialization (Used in the watchers so the updates dont repeat and python knows when a new update appears)
 
 ### Infrastructure
 
-* **GitHub as a lightweight database**
-* **AIOHTTP web server** (heartbeat for hosting platforms)
+* **GitHub as a lightweight database (Mainly coz i cannot link an SQL to the free server i use, so i used github as a workaround)[I now use a better server, but this is data that I am fine with going public]**
+* **AIOHTTP web server** (This is the site to keep my bot alive, if you use a web-application server on your bot, such as render, then the initial setup is already on this)
 
 ---
 
@@ -128,18 +128,14 @@ This bot automates voice enforcement, journaling habits, team systems, competiti
 
 ## 📚 What I Learned
 
-Through building this bot, I gained hands-on experience with:
-
-* **Asynchronous programming** using `asyncio`
-* Designing **idempotent background tasks**
-* Handling **race conditions** in distributed systems
-* Working with **unofficial / unstable APIs** (LeetCode GraphQL)
-* Using **GitHub as a persistent datastore**
-* Writing **production-grade Discord bots**
-* Debugging long-running background tasks
-* Designing extensible and modular bot architectures
-
-Most importantly, I learned how to build systems that **fail loudly, recover safely, and scale cleanly**.
+* How to use **discord.py** to create slash commands and interact with users
+* How **background tasks** work in Discord bots
+* How to **connect and use external APIs** (Codeforces, LeetCode)
+* How to handle **API errors and unexpected responses**
+* How to send **embeds, DMs, and automated messages**
+* How to keep bot data persistent across restarts
+* How to debug async code using logs and print statements
+* How to be patient
 
 ---
 
@@ -164,10 +160,12 @@ pip install -r requirements.txt
 
 ### 3️⃣ Create `.env` File
 
+- Create the required json files
+- Code will automatically create the schema for them, so don't bother.
+
 ```env
 TOKEN=your_discord_bot_token
 
-# GitHub Persistence
 GH_TOKEN=your_github_token
 GH_REPO_OWNER=your_github_username
 GH_REPO_NAME=your_repo_name
@@ -177,6 +175,7 @@ GH_CF_FILE_PATH=codeforces.json
 GH_LC_FILE_PATH=leetcode.json
 ```
 
+> Create a github token from the settings, if you don't know how, learn it.
 > ⚠️ The GitHub token must have **repository contents read/write permissions**.
 
 ---
@@ -206,8 +205,6 @@ You should see logs confirming:
 ---
 
 ## 🏁 Final Notes
-
-This project is built with **scalability, debuggability, and reliability** in mind.
-It is actively designed to handle real-world Discord servers where silent failures are unacceptable.
+This project is pretty much a work in development, I plan to add more "games" to it, paired with features such as server moderation, voice tracking, using SQL instead of updating stuff directly on this github repo, and hopefully creating a good looking leaderboard using Pillow, and no i don't plan to use AI for these. 
 
 Feel free to fork, extend, or adapt it to your own communities 🚀
