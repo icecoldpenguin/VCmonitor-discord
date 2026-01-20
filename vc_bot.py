@@ -1560,10 +1560,33 @@ LEETCODE_DAILY_QUERY = {
 }
 
 async def fetch_leetcode_daily():
-    async with aiohttp.ClientSession() as session:
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; DiscordBot/1.0)",
+        "Referer": "https://leetcode.com",
+    }
+
+    async with aiohttp.ClientSession(headers=headers) as session:
         async with session.post(LEETCODE_GRAPHQL, json=LEETCODE_DAILY_QUERY) as r:
-            data = await r.json()
-            return data["data"]["activeDailyCodingChallengeQuestion"]
+            text = await r.text()
+
+            print("[LEETCODE:RAW]", text[:500])  # PRINT RAW RESPONSE (first 500 chars)
+
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                raise RuntimeError("LeetCode did not return JSON")
+
+            if "data" not in data:
+                raise RuntimeError(
+                    f"LeetCode GraphQL error response: {data}"
+                )
+
+            challenge = data["data"].get("activeDailyCodingChallengeQuestion")
+            if not challenge:
+                raise RuntimeError("No daily challenge found")
+
+            return challenge
 
 @tasks.loop(minutes=10)
 async def leetcode_watcher():
