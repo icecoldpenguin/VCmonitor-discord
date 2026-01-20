@@ -1482,63 +1482,98 @@ async def fetch_contests():
 
 
 # ---------- WATCHER ----------
+def cf_dbg(tag, msg):
+    print(f"[CODEFORCES:{tag}] {msg}")
+
 @tasks.loop(minutes=1)
 async def codeforces_watcher():
-    cf_data = await github_get_cf_data()
-    contests = await fetch_contests()
+    cf_dbg("START", "Watcher tick started")
 
-    upcoming = [c for c in contests if c["phase"] == "BEFORE"]
-    if not upcoming:
-        return
+    try:
+        cf_data = await github_get_cf_data()
+        cf_dbg("STATE", f"Loaded GitHub state: {cf_data}")
 
-    upcoming.sort(key=lambda c: c["startTimeSeconds"])
-    contest = upcoming[0]
+        contests = await fetch_contests()
+        cf_dbg("FETCH", f"Fetched {len(contests)} contests")
 
-    if cf_data["last_contest_id"] == contest["id"]:
-        return
+        upcoming = [c for c in contests if c["phase"] == "BEFORE"]
+        cf_dbg("FILTER", f"Upcoming contests: {len(upcoming)}")
 
-    cf_data["last_contest_id"] = contest["id"]
-    await github_set_cf_data(cf_data)
+        if not upcoming:
+            cf_dbg("SKIP", "No upcoming contests")
+            return
 
-    embed = discord.Embed(
-        title="🏆 Team Codeforcers",
-        description=(
-            f"**{contest['name']}**\n\n"
-            "⚡ One-click registration."
-        ),
-        color=0x1f8b4c
-    )
+        upcoming.sort(key=lambda c: c["startTimeSeconds"])
+        contest = upcoming[0]
 
-    embed.add_field(
-        name="📌 Type",
-        value=parse_contest_type(contest["name"]),
-        inline=True
-    )
+        cf_dbg(
+            "CONTEST",
+            f"Next contest: {contest['name']} (id={contest['id']})"
+        )
 
-    embed.add_field(
-        name="🕒 Starts",
-        value=f"<t:{contest['startTimeSeconds']}:F>",
-        inline=True
-    )
+        if cf_data["last_contest_id"] == contest["id"]:
+            cf_dbg("SKIP", "Contest already posted")
+            return
 
-    embed.add_field(
-        name="⏳ Duration",
-        value=format_duration(contest["durationSeconds"]),
-        inline=True
-    )
+        embed = discord.Embed(
+            title="🏆 Team Codeforcers",
+            description=(
+                f"**{contest['name']}**\n\n"
+                "⚡ One-click registration."
+            ),
+            color=0x1f8b4c
+        )
 
-    embed.add_field(
-        name="📝 Register Here",
-        value=registration_link(contest["id"]),
-        inline=False
-    )
+        embed.add_field(
+            name="📌 Type",
+            value=parse_contest_type(contest["name"]),
+            inline=True
+        )
 
-    embed.set_footer(text="Telugu Study Buddies")
+        embed.add_field(
+            name="🕒 Starts",
+            value=f"<t:{contest['startTimeSeconds']}:F>",
+            inline=True
+        )
 
-    for ch_id in cf_data["channels"]:
-        channel = bot.get_channel(ch_id)
-        if channel:
+        embed.add_field(
+            name="⏳ Duration",
+            value=format_duration(contest["durationSeconds"]),
+            inline=True
+        )
+
+        embed.add_field(
+            name="📝 Register Here",
+            value=registration_link(contest["id"]),
+            inline=False
+        )
+
+        embed.set_footer(text="Telugu Study Buddies")
+
+        posted = False
+        cf_dbg("CHANNELS", f"Posting to channels: {cf_data['channels']}")
+
+        for ch_id in cf_data["channels"]:
+            cf_dbg("CHANNEL", f"Trying channel ID {ch_id}")
+
+            channel = bot.get_channel(ch_id)
+            if not channel:
+                cf_dbg("CHANNEL", f"Channel {ch_id} not found in cache")
+                continue
+
             await channel.send(embed=embed)
+            cf_dbg("POST", f"Posted to #{channel.name}")
+            posted = True
+
+        if posted:
+            cf_data["last_contest_id"] = contest["id"]
+            await github_set_cf_data(cf_data)
+            cf_dbg("STATE", f"Updated last_contest_id -> {contest['id']}")
+        else:
+            cf_dbg("WARNING", "Nothing posted — state NOT updated")
+
+    except Exception as e:
+        cf_dbg("ERROR", repr(e))
 
 LEETCODE_GRAPHQL = "https://leetcode.com/graphql"
 
@@ -1612,22 +1647,36 @@ async def leetcode_watcher():
 
         embed = discord.Embed(
             title="🧠 LeetCode Daily Challenge",
-            description=f"**{q['questionId']}. {q['title']}**",
+            description=f"**{q['title']}**",
             color=0xf89f1b
         )
-
-
+        
+        embed.add_field(
+            name="🆔 Problem ID",
+            value=q["questionId"],
+            inline=True
+        )
+        
         embed.add_field(
             name="⚡ Difficulty",
             value=q["difficulty"],
             inline=True
         )
-
+        
         embed.add_field(
-            name="🔗 Solve Here",
+            name="🕒 Date",
+            value=daily["date"],
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📝 Solve Here",
             value=f"https://leetcode.com{daily['link']}",
             inline=False
         )
+        
+        embed.set_footer(text="Telugu Study Buddies • Daily LeetCode")
+
 
         posted = False
 
