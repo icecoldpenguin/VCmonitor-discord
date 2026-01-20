@@ -1565,52 +1565,70 @@ async def fetch_leetcode_daily():
             data = await r.json()
             return data["data"]["activeDailyCodingChallengeQuestion"]
 
-
 @tasks.loop(minutes=10)
 async def leetcode_watcher():
-    lc_data = await github_get_lc_data()
-    daily = await fetch_leetcode_daily()
+    dbg("START", "Watcher tick started")
 
-    q = daily["question"]
-    slug = q["titleSlug"]
+    try:
+        lc_data = await github_get_lc_data()
+        dbg("STATE", f"Loaded GitHub state: {lc_data}")
 
-    # SAME GUARD AS CODEFORCES
-    if lc_data["last_question_slug"] == slug:
-        return
+        daily = await fetch_leetcode_daily()
+        dbg("FETCH", f"Fetched daily payload: {daily}")
 
-    embed = discord.Embed(
-        title="🧠 LeetCode Daily Challenge",
-        description=f"**{q['frontendQuestionId']}. {q['title']}**",
-        color=0xf89f1b
-    )
+        q = daily["question"]
+        slug = q["titleSlug"]
+        dbg("QUESTION", f"Today's slug = {slug}")
 
-    embed.add_field(
-        name="⚡ Difficulty",
-        value=q["difficulty"],
-        inline=True
-    )
+        if lc_data["last_question_slug"] == slug:
+            dbg("SKIP", "Slug already posted, skipping")
+            return
 
-    embed.add_field(
-        name="🔗 Solve Here",
-        value=f"https://leetcode.com{daily['link']}",
-        inline=False
-    )
+        embed = discord.Embed(
+            title="🧠 LeetCode Daily Challenge",
+            description=f"**{q['frontendQuestionId']}. {q['title']}**",
+            color=0xf89f1b
+        )
 
-    embed.set_footer(text="Daily grind. No excuses.")
+        embed.add_field(
+            name="⚡ Difficulty",
+            value=q["difficulty"],
+            inline=True
+        )
 
-    posted = False
+        embed.add_field(
+            name="🔗 Solve Here",
+            value=f"https://leetcode.com{daily['link']}",
+            inline=False
+        )
 
-    # EXACT SAME LOOP STRUCTURE AS CF
-    for ch_id in lc_data["channels"]:
-        channel = bot.get_channel(ch_id)
-        if channel:
+        posted = False
+
+        dbg("CHANNELS", f"Posting to channels: {lc_data['channels']}")
+
+        for ch_id in lc_data["channels"]:
+            dbg("CHANNEL", f"Trying channel ID {ch_id}")
+
+            channel = bot.get_channel(ch_id)
+
+            if channel is None:
+                dbg("CHANNEL", f"Channel {ch_id} NOT in cache")
+                continue
+
+            dbg("CHANNEL", f"Channel found: {channel.name}")
             await channel.send(embed=embed)
+            dbg("POST", f"Posted to #{channel.name}")
             posted = True
 
-    # EXACT SAME STATE UPDATE PATTERN
-    if posted:
-        lc_data["last_question_slug"] = slug
-        await github_set_lc_data(lc_data)
+        if posted:
+            lc_data["last_question_slug"] = slug
+            await github_set_lc_data(lc_data)
+            dbg("STATE", f"Updated last_question_slug -> {slug}")
+        else:
+            dbg("WARNING", "Nothing posted — state NOT updated")
+
+    except Exception as e:
+        dbg("ERROR", repr(e))
 
 # ---------- SLASH COMMAND ----------
 @bot.tree.command(name="setup", description="Setup automated competitive programming updates")
@@ -1645,20 +1663,21 @@ async def setup(
             )
 
         elif update_type.value == "leetcode":
-            # 1. Load latest
-            lc_data = await github_get_lc_data()
+            print("[SETUP:LC] Setup started")
         
-            # 2. Add channel FIRST
+            lc_data = await github_get_lc_data()
+            print("[SETUP:LC] Loaded state:", lc_data)
+        
             if channel.id not in lc_data["channels"]:
                 lc_data["channels"].append(channel.id)
                 await github_set_lc_data(lc_data)
+                print(f"[SETUP:LC] Added channel {channel.id}")
         
-            # 3. Reload to guarantee state
-            lc_data = await github_get_lc_data()
-        
-            # 4. Start watcher AFTER channels exist
             if not leetcode_watcher.is_running():
                 leetcode_watcher.start()
+                print("[SETUP:LC] Watcher started")
+            else:
+                print("[SETUP:LC] Watcher already running")
         
             await interaction.followup.send(
                 f"✅ **LeetCode updates enabled** in {channel.mention}"
