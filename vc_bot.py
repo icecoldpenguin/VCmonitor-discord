@@ -1571,14 +1571,12 @@ async def leetcode_watcher():
     lc_data = await github_get_lc_data()
     daily = await fetch_leetcode_daily()
 
-    slug = daily["question"]["titleSlug"]
+    q = daily["question"]
+    slug = q["titleSlug"]
+
+    # SAME GUARD AS CODEFORCES
     if lc_data["last_question_slug"] == slug:
         return
-
-    lc_data["last_question_slug"] = slug
-    await github_set_lc_data(lc_data)
-
-    q = daily["question"]
 
     embed = discord.Embed(
         title="🧠 LeetCode Daily Challenge",
@@ -1586,7 +1584,12 @@ async def leetcode_watcher():
         color=0xf89f1b
     )
 
-    embed.add_field(name="⚡ Difficulty", value=q["difficulty"], inline=True)
+    embed.add_field(
+        name="⚡ Difficulty",
+        value=q["difficulty"],
+        inline=True
+    )
+
     embed.add_field(
         name="🔗 Solve Here",
         value=f"https://leetcode.com{daily['link']}",
@@ -1597,17 +1600,17 @@ async def leetcode_watcher():
 
     posted = False
 
+    # EXACT SAME LOOP STRUCTURE AS CF
     for ch_id in lc_data["channels"]:
         channel = bot.get_channel(ch_id)
         if channel:
             await channel.send(embed=embed)
             posted = True
-    
+
+    # EXACT SAME STATE UPDATE PATTERN
     if posted:
         lc_data["last_question_slug"] = slug
         await github_set_lc_data(lc_data)
-    else:
-        print("[LEETCODE] No valid channels, skipping state update")
 
 # ---------- SLASH COMMAND ----------
 @bot.tree.command(name="setup", description="Setup automated competitive programming updates")
