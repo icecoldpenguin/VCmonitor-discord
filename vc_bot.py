@@ -1595,10 +1595,19 @@ async def leetcode_watcher():
 
     embed.set_footer(text="Daily grind. No excuses.")
 
+    posted = False
+
     for ch_id in lc_data["channels"]:
         channel = bot.get_channel(ch_id)
         if channel:
             await channel.send(embed=embed)
+            posted = True
+    
+    if posted:
+        lc_data["last_question_slug"] = slug
+        await github_set_lc_data(lc_data)
+    else:
+        print("[LEETCODE] No valid channels, skipping state update")
 
 # ---------- SLASH COMMAND ----------
 @bot.tree.command(name="setup", description="Setup automated competitive programming updates")
@@ -1633,18 +1642,25 @@ async def setup(
             )
 
         elif update_type.value == "leetcode":
+            # 1. Load latest
             lc_data = await github_get_lc_data()
-
+        
+            # 2. Add channel FIRST
             if channel.id not in lc_data["channels"]:
                 lc_data["channels"].append(channel.id)
                 await github_set_lc_data(lc_data)
-
+        
+            # 3. Reload to guarantee state
+            lc_data = await github_get_lc_data()
+        
+            # 4. Start watcher AFTER channels exist
             if not leetcode_watcher.is_running():
                 leetcode_watcher.start()
-
+        
             await interaction.followup.send(
                 f"✅ **LeetCode updates enabled** in {channel.mention}"
             )
+
 
     except Exception as e:
         await interaction.followup.send(
