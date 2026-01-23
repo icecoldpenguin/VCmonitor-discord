@@ -1771,6 +1771,459 @@ async def setup(
         )
 
 # =====================================================
+#              ACTIVITY TRACKING HELPERS
+# =====================================================
+
+def get_user_data(user_id: str):
+    """Get or create user activity data"""
+    if user_id not in activity_data:
+        activity_data[user_id] = {
+            "voice_time": 0,
+            "stream_time": 0,
+            "video_time": 0,
+            "coins": 0.0,
+            "xp": 0,
+            "level": 1,
+            "last_activity_update": None,
+            "currently_in_vc": False,
+            "vc_join_time": None,
+            "stream_start_time": None,
+            "video_start_time": None
+        }
+    return activity_data[user_id]
+
+def calculate_level(xp: int):
+    """Linear progression: 100 XP per level"""
+    return max(1, xp // 100 + 1)
+
+def calculate_coin_rate(level: int):
+    """Base 0.5 coins/min + 0.2x per level"""
+    return 0.5 * (1 + 0.2 * (level - 1))
+
+def format_time(seconds: int):
+    """Format seconds into readable time"""
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if secs > 0 or not parts:
+        parts.append(f"{secs}s")
+    
+    return " ".join(parts)
+
+# =====================================================
+#              ACTIVITY TRACKING BACKGROUND TASK
+# =====================================================
+
+@tasks.loop(minutes=1)
+async def update_activity_tracking():
+    """Update activity and award coins every minute"""
+    current_time = time_module.time()
+    
+    for guild in bot.guilds:
+        for member in guild.members:
+            if member.bot:
+                continue
+            
+            user_id = str(member.id)
+            user_data = get_user_data(user_id)
+            
+            # Check if user is in VC
+            if member.voice and member.voice.channel:
+                # User is in VC
+                if not user_data["currently_in_vc"]:
+                    # Just joined
+                    user_data["currently_in_vc"] = True
+                    user_data["vc_join_time"] = current_time
+                
+                # Add 60 seconds of voice time
+                user_data["voice_time"] += 60
+                user_data["xp"] += 1  # 1 XP per minute in VC
+                
+                # Check for streaming
+                if member.voice.self_stream:
+                    if user_data["stream_start_time"] is None:
+                        user_data["stream_start_time"] = current_time
+                    user_data["stream_time"] += 60
+                    user_data["xp"] += 2  # Bonus XP for streaming
+                else:
+                    user_data["stream_start_time"] = None
+                
+                # Check for video
+                if member.voice.self_video:
+                    if user_data["video_start_time"] is None:
+                        user_data["video_start_time"] = current_time
+                    user_data["video_time"] += 60
+                    user_data["xp"] += 1  # Bonus XP for video
+                else:
+                    user_data["video_start_time"] = None
+                
+                # Update level
+                new_level = calculate_level(user_data["xp"])
+                if new_level > user_data["level"]:
+                    user_data["level"] = new_level
+                
+                # Award coins based on level
+                coin_rate = calculate_coin_rate(user_data["level"])
+                user_data["coins"] += coin_rate
+                
+            else:
+                # User left VC
+                if user_data["currently_in_vc"]:
+                    user_data["currently_in_vc"] = False
+                    user_data["vc_join_time"] = None
+                    user_data["stream_start_time"] = None
+                    user_data["video_start_time"] = None
+            
+            user_data["last_activity_update"] = current_time
+    
+    save_activity_data(activity_data)
+
+# =====================================================
+#                  LEADERBOARD VIEW
+# =====================================================
+
+class LeaderboardView(View):
+    def __init__(self, guild: discord.Guild, pages: list, current_page: int = 0):
+        super().__init__(timeout=180)
+        self.guild = guild
+        self.pages = pages
+        self.current_page = current_page
+        self.update_buttons()
+    
+    def update_buttons(self):
+        self.clear_items()
+        
+        # Previous button
+        prev_button = Button(
+            label="◀ Previous",
+            style=discord.ButtonStyle.gray,
+            disabled=self.current_page == 0
+        )
+        prev_button.callback = self.previous_page
+        self.add_item(prev_button)
+        
+        # Page indicator
+        page_button = Button(
+            label=f"Page {self.current_page + 1}/{len(self.pages)}",
+            style=discord.ButtonStyle.blurple,
+            disabled=True
+        )
+        self.add_item(page_button)
+        
+        # Next button
+        next_button = Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.gray,
+            disabled=self.current_page >= len(self.pages) - 1
+        )
+        next_button.callback = self.next_page
+        self.add_item(next_button)
+    
+    async def previous_page(self, interaction: discord.Interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+    
+    async def next_page(self, interaction: discord.Interaction):
+        if self.current_page < len(self.pages) - 1:
+            self.current_page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+# =====================================================
+#              LEADERBOARD COMMAND
+# =====================================================
+
+@tree.command(name="leaderboard", description="View activity leaderboard")
+@app_commands.describe(sort_by="What to sort by")
+@app_commands.choices(sort_by=[
+    app_commands.Choice(name="XP", value="xp"),
+    app_commands.Choice(name="Voice Time", value="voice_time"),
+    app_commands.Choice(name="Stream Time", value="stream_time"),
+    app_commands.Choice(name="Video Time", value="video_time"),
+    app_commands.Choice(name="Coins", value="coins"),
+])
+async def leaderboard(
+    interaction: discord.Interaction,
+    sort_by: app_commands.Choice[str] = None
+):
+    await interaction.response.defer()
+    
+    sort_key = sort_by.value if sort_by else "xp"
+    
+    # Get all users with data
+    user_list = []
+    for user_id, data in activity_data.items():
+        try:
+            member = await interaction.guild.fetch_member(int(user_id))
+            if member and not member.bot:
+                user_list.append({
+                    "member": member,
+                    "data": data,
+                    "user_id": user_id
+                })
+        except:
+            continue
+    
+    # Sort by selected metric
+    user_list.sort(key=lambda x: x["data"][sort_key], reverse=True)
+    
+    # Create pages (10 users per page)
+    users_per_page = 10
+    pages = []
+    
+    for page_num in range(0, len(user_list), users_per_page):
+        page_users = user_list[page_num:page_num + users_per_page]
+        
+        embed = discord.Embed(
+            title="🏆 Activity Leaderboard",
+            description=f"Sorted by: **{sort_by.name if sort_by else 'XP'}**",
+            color=0xFFD700
+        )
+        
+        leaderboard_text = ""
+        for idx, user_info in enumerate(page_users, start=page_num + 1):
+            member = user_info["member"]
+            data = user_info["data"]
+            
+            # Red dot if currently in VC
+            status = "🔴" if data["currently_in_vc"] else "⚫"
+            
+            # Rank emoji
+            if idx == 1:
+                rank_emoji = "🥇"
+            elif idx == 2:
+                rank_emoji = "🥈"
+            elif idx == 3:
+                rank_emoji = "🥉"
+            else:
+                rank_emoji = f"**#{idx}**"
+            
+            leaderboard_text += (
+                f"{rank_emoji} {status} **{member.display_name}**\n"
+                f"├ Level {data['level']} • {data['xp']} XP\n"
+                f"├ 💰 {data['coins']:.1f} coins\n"
+                f"├ 🎤 {format_time(data['voice_time'])}\n"
+                f"├ 📺 {format_time(data['stream_time'])}\n"
+                f"└ 📹 {format_time(data['video_time'])}\n\n"
+            )
+        
+        embed.description += f"\n\n{leaderboard_text}"
+        embed.set_footer(text=f"Page {len(pages) + 1} • 🔴 = Currently in VC")
+        embed.timestamp = datetime.utcnow()
+        
+        pages.append(embed)
+    
+    if not pages:
+        return await interaction.followup.send("No activity data yet!")
+    
+    view = LeaderboardView(interaction.guild, pages)
+    await interaction.followup.send(embed=pages[0], view=view)
+
+# =====================================================
+#              PROFILE COMMAND
+# =====================================================
+
+@tree.command(name="profile", description="View your profile or someone else's")
+@app_commands.describe(user="The user to view (leave empty for yourself)")
+async def profile(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    
+    if target.bot:
+        return await interaction.response.send_message("Bots don't have profiles!", ephemeral=True)
+    
+    user_id = str(target.id)
+    user_data = get_user_data(user_id)
+    
+    # Calculate rank
+    all_users = [(uid, data) for uid, data in activity_data.items()]
+    all_users.sort(key=lambda x: x[1]["xp"], reverse=True)
+    
+    rank = "Unranked"
+    for idx, (uid, _) in enumerate(all_users, start=1):
+        if uid == user_id:
+            rank = f"#{idx}"
+            break
+    
+    # Create embed
+    embed = discord.Embed(
+        title=f"📊 Profile: {target.display_name}",
+        color=target.color if target.color != discord.Color.default() else 0x5865F2
+    )
+    
+    embed.set_thumbnail(url=target.display_avatar.url)
+    
+    # User info
+    embed.add_field(
+        name="👤 User Info",
+        value=(
+            f"**Username:** {target.name}\n"
+            f"**ID:** {target.id}\n"
+            f"**Created:** <t:{int(target.created_at.timestamp())}:R>"
+        ),
+        inline=True
+    )
+    
+    # Server info
+    embed.add_field(
+        name="🏠 Server Info",
+        value=(
+            f"**Joined:** <t:{int(target.joined_at.timestamp())}:R>\n"
+            f"**Rank:** {rank}\n"
+            f"**Roles:** {len(target.roles) - 1}"
+        ),
+        inline=True
+    )
+    
+    # Level & XP
+    current_level = user_data["level"]
+    current_xp = user_data["xp"]
+    xp_for_current = (current_level - 1) * 100
+    xp_for_next = current_level * 100
+    xp_progress = current_xp - xp_for_current
+    xp_needed = xp_for_next - xp_for_current
+    
+    progress_bar_length = 10
+    filled = int((xp_progress / xp_needed) * progress_bar_length)
+    bar = "█" * filled + "░" * (progress_bar_length - filled)
+    
+    embed.add_field(
+        name="⭐ Level & XP",
+        value=(
+            f"**Level:** {current_level}\n"
+            f"**XP:** {current_xp}\n"
+            f"**Progress:** {bar} {xp_progress}/{xp_needed}"
+        ),
+        inline=False
+    )
+    
+    # Economy
+    coin_rate = calculate_coin_rate(current_level)
+    embed.add_field(
+        name="💰 Economy",
+        value=(
+            f"**Coins:** {user_data['coins']:.1f}\n"
+            f"**Earn Rate:** {coin_rate:.2f} coins/min"
+        ),
+        inline=True
+    )
+    
+    # Activity stats
+    status = "🔴 In VC" if user_data["currently_in_vc"] else "⚫ Offline"
+    embed.add_field(
+        name="📊 Activity",
+        value=(
+            f"**Status:** {status}\n"
+            f"**Voice:** {format_time(user_data['voice_time'])}\n"
+            f"**Stream:** {format_time(user_data['stream_time'])}\n"
+            f"**Video:** {format_time(user_data['video_time'])}"
+        ),
+        inline=True
+    )
+    
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+    embed.timestamp = datetime.utcnow()
+    
+    await interaction.response.send_message(embed=embed)
+
+# =====================================================
+#              SHOP COMMANDS
+# =====================================================
+
+@tree.command(name="shop", description="View the shop")
+async def shop(interaction: discord.Interaction):
+    items = shop_data["items"]
+    
+    if not items:
+        return await interaction.response.send_message(
+            "🛒 The shop is empty! Admins can add items with `/additem`",
+            ephemeral=True
+        )
+    
+    embed = discord.Embed(
+        title="🛒 Shop",
+        description="Buy items with your coins!",
+        color=0x00FF00
+    )
+    
+    for idx, item in enumerate(items, start=1):
+        embed.add_field(
+            name=f"{idx}. {item['name']} - 💰 {item['price']} coins",
+            value=item['description'],
+            inline=False
+        )
+    
+    embed.set_footer(text="Use /buy <item_number> to purchase")
+    
+    await interaction.response.send_message(embed=embed)
+
+@tree.command(name="additem", description="Add an item to the shop")
+@app_commands.describe(
+    name="Item name",
+    price="Item price in coins",
+    description="Item description"
+)
+async def additem(
+    interaction: discord.Interaction,
+    name: str,
+    price: float,
+    description: str
+):
+    # Check permission
+    if not any(role.id in ALLOWED_ROLES for role in interaction.user.roles):
+        return await interaction.response.send_message("You cannot use this command.", ephemeral=True)
+    
+    if price <= 0:
+        return await interaction.response.send_message("Price must be positive!", ephemeral=True)
+    
+    shop_data["items"].append({
+        "name": name,
+        "price": price,
+        "description": description
+    })
+    
+    save_shop_data(shop_data)
+    
+    await interaction.response.send_message(
+        f"✅ Added **{name}** to the shop for **{price}** coins!",
+        ephemeral=False
+    )
+
+@tree.command(name="buy", description="Buy an item from the shop")
+@app_commands.describe(item_number="The item number from /shop")
+async def buy(interaction: discord.Interaction, item_number: int):
+    user_id = str(interaction.user.id)
+    user_data = get_user_data(user_id)
+    
+    items = shop_data["items"]
+    
+    if item_number < 1 or item_number > len(items):
+        return await interaction.response.send_message("Invalid item number!", ephemeral=True)
+    
+    item = items[item_number - 1]
+    
+    if user_data["coins"] < item["price"]:
+        return await interaction.response.send_message(
+            f"❌ You need **{item['price']}** coins but only have **{user_data['coins']:.1f}**!",
+            ephemeral=True
+        )
+    
+    user_data["coins"] -= item["price"]
+    save_activity_data(activity_data)
+    
+    await interaction.response.send_message(
+        f"✅ You bought **{item['name']}** for **{item['price']}** coins!\n"
+        f"💰 Remaining balance: **{user_data['coins']:.1f}** coins"
+    )
+
+# =====================================================
 #                     MAIN ENTRY
 # =====================================================
 
