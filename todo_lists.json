@@ -2,10 +2,6 @@
     "1474836687564574880:771262480408248350": {
         "pending": [
             {
-                "id": "001",
-                "name": "hi c:"
-            },
-            {
                 "id": "002",
                 "name": "complete chapter 6 and chapter 7"
             },
@@ -18,7 +14,12 @@
                 "name": "read book \"the subtle art of not giving a fk\""
             }
         ],
-        "completed": [],
-        "embed_message_id": 1474840699793969383
+        "completed": [
+            {
+                "id": "001",
+                "name": "hi c:"
+            }
+        ],
+        "embed_message_id": 1474840740441100350
     }
 }
