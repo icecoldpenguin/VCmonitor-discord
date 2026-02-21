@@ -2,10 +2,6 @@
     "1474836687564574880:771262480408248350": {
         "pending": [
             {
-                "id": "002",
-                "name": "complete chapter 6 and chapter 7"
-            },
-            {
                 "id": "003",
                 "name": "write research paper on quantum physics"
             },
@@ -18,8 +14,12 @@
             {
                 "id": "001",
                 "name": "hi c:"
+            },
+            {
+                "id": "002",
+                "name": "complete chapter 6 and chapter 7"
             }
         ],
-        "embed_message_id": 1474840899262611709
+        "embed_message_id": 1474840954178633822
     }
 }
