@@ -92,25 +92,71 @@ journal_data = load_journal_data()
 # Structure: { "user_id": { "enabled": bool, "journal_thread_id": int, "last_reminder_sent": "ISO_timestamp" } }
 
 # ============ TODO LIST CONFIG =============
-TODO_FILE = "todo_lists.json"
+GH_TODO_FILE = os.getenv("GH_TODO_FILE_PATH", "todo_lists.json")
 
-def load_todo_data():
+todo_file_sha = None
+
+async def github_get_todo_data():
+    global todo_file_sha
+
+    GH_TODO_API = f"https://api.github.com/repos/{os.getenv('GH_REPO_OWNER')}/{os.getenv('GH_REPO_NAME')}/contents/{GH_TODO_FILE}"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('GH_TOKEN')}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(GH_TODO_API, headers=headers) as r:
+            text = await r.text()
+            if r.status == 200:
+                data = json.loads(text)
+                todo_file_sha = data["sha"]
+                content = base64.b64decode(data["content"]).decode()
+                return json.loads(content)
+            if r.status == 404:
+                await github_set_todo_data({})
+                return {}
+            raise RuntimeError(f"GitHub TODO GET failed ({r.status})\n{text}")
+
+
+async def github_set_todo_data(data_dict):
+    global todo_file_sha
+
+    GH_TODO_API = f"https://api.github.com/repos/{os.getenv('GH_REPO_OWNER')}/{os.getenv('GH_REPO_NAME')}/contents/{GH_TODO_FILE}"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('GH_TOKEN')}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    encoded = base64.b64encode(json.dumps(data_dict, indent=4).encode()).decode()
+    payload = {"message": "update todo lists", "content": encoded}
+    if todo_file_sha:
+        payload["sha"] = todo_file_sha
+
+    async with aiohttp.ClientSession() as session:
+        async with session.put(GH_TODO_API, headers=headers, json=payload) as r:
+            if r.status not in (200, 201):
+                text = await r.text()
+                raise RuntimeError(f"GitHub TODO PUT failed ({r.status})\n{text}")
+            resp = await r.json()
+            todo_file_sha = resp["content"]["sha"]
+
+
+# In-memory cache — loaded on bot ready, written through to GitHub on every change
+todo_data: dict = {}
+
+async def save_todo_data():
+    """Write the in-memory todo_data dict to GitHub."""
     try:
-        with open(TODO_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+        await github_set_todo_data(todo_data)
+    except Exception as e:
+        print(f"[TODO] GitHub save failed: {e}")
 
-def save_todo_data(data):
-    with open(TODO_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-todo_data = load_todo_data()
 # Structure:
 # {
 #   "channel_id:user_id": {
-#       "pending": ["task1", "task2"],
-#       "completed": ["task3"],
+#       "pending":  [{"id": "001", "name": "task text"}, ...],
+#       "completed":[{"id": "002", "name": "other task"}, ...],
 #       "embed_message_id": int or null
 #   }
 # }
@@ -431,7 +477,16 @@ async def check_journal_reminders():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    
+
+    # Load todo data from GitHub into memory
+    global todo_data
+    try:
+        todo_data = await github_get_todo_data()
+        print(f"[TODO] Loaded {len(todo_data)} todo lists from GitHub")
+    except Exception as e:
+        print(f"[TODO] Failed to load from GitHub, starting empty: {e}")
+        todo_data = {}
+
     # Start the journal reminder task
     if not check_journal_reminders.is_running():
         check_journal_reminders.start()
@@ -2295,20 +2350,22 @@ def make_todo_embed(user: discord.User | discord.Member, user_todo: dict) -> dis
     return embed
 
 
-async def _update_or_send_embed(channel, user_todo: dict, author):
-    """Edit the existing embed or post a new one, saving the message ID."""
+async def _post_new_embed(channel, user_todo: dict, author):
+    """Always post a fresh embed, deleting the previous one if it exists."""
     embed = make_todo_embed(author, user_todo)
-    existing_msg_id = user_todo.get("embed_message_id")
-    if existing_msg_id:
+
+    # Delete the old embed silently
+    old_msg_id = user_todo.get("embed_message_id")
+    if old_msg_id:
         try:
-            existing_msg = await channel.fetch_message(existing_msg_id)
-            await existing_msg.edit(embed=embed)
-            return
+            old_msg = await channel.fetch_message(old_msg_id)
+            await old_msg.delete()
         except Exception:
             pass
+
     sent = await channel.send(embed=embed)
     user_todo["embed_message_id"] = sent.id
-    save_todo_data(todo_data)
+    await save_todo_data()
 
 
 @bot.event
@@ -2364,15 +2421,12 @@ async def on_message(message: discord.Message):
 
     # --- Mark tasks as completed (by ID or by name, pending-only) ---
     for raw in new_completed:
-        # Check if the raw value looks like an ID (1–3 digits, possibly zero-padded)
         id_match = _re.fullmatch(r"0*(\d{1,3})", raw.strip())
 
         if id_match:
-            # Normalise to zero-padded form e.g. "1" → "001"
             normalised_id = f"{int(id_match.group(1)):03d}"
             task = next((t for t in user_todo["pending"] if t["id"] == normalised_id), None)
         else:
-            # Match by name (case-insensitive), pending only
             task = next(
                 (t for t in user_todo["pending"] if t["name"].lower() == raw.lower()),
                 None
@@ -2380,13 +2434,10 @@ async def on_message(message: discord.Message):
 
         if task:
             user_todo["pending"].remove(task)
-            # Only add to completed if not already there
             if not any(c["id"] == task["id"] for c in user_todo["completed"]):
                 user_todo["completed"].append(task)
-        # If no match found in pending, silently ignore (per spec: must be in pending)
 
-    save_todo_data(todo_data)
-    await _update_or_send_embed(message.channel, user_todo, message.author)
+    await _post_new_embed(message.channel, user_todo, message.author)
     await bot.process_commands(message)
 
 
@@ -2411,8 +2462,7 @@ async def cleartodo(interaction: discord.Interaction, what: app_commands.Choice[
     elif clear == "completed":
         user_todo["completed"] = []
 
-    save_todo_data(todo_data)
-    await _update_or_send_embed(interaction.channel, user_todo, interaction.user)
+    await _post_new_embed(interaction.channel, user_todo, interaction.user)
     await interaction.response.send_message("✅ To-do list cleared!", ephemeral=True)
 
 
