@@ -91,6 +91,30 @@ def save_journal_data(data):
 journal_data = load_journal_data()
 # Structure: { "user_id": { "enabled": bool, "journal_thread_id": int, "last_reminder_sent": "ISO_timestamp" } }
 
+# ============ TODO LIST CONFIG =============
+TODO_FILE = "todo_lists.json"
+
+def load_todo_data():
+    try:
+        with open(TODO_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_todo_data(data):
+    with open(TODO_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+todo_data = load_todo_data()
+# Structure:
+# {
+#   "channel_id:user_id": {
+#       "pending": ["task1", "task2"],
+#       "completed": ["task3"],
+#       "embed_message_id": int or null
+#   }
+# }
+
 # =====================================================
 
 intents = discord.Intents.default()
@@ -99,6 +123,7 @@ intents.members = True
 intents.voice_states = True
 intents.messages = True
 intents.dm_messages = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
@@ -2222,6 +2247,170 @@ async def buy(interaction: discord.Interaction, item_number: int):
         f"✅ You bought **{item['name']}** for **{item['price']}** coins!\n"
         f"💰 Remaining balance: **{user_data['coins']:.1f}** coins"
     )
+
+# =====================================================
+#                   TODO LIST FEATURE
+# =====================================================
+
+import re as _re
+
+def make_todo_embed(user: discord.User | discord.Member, pending: list, completed: list) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"📋 {user.display_name}'s To-Do List",
+        color=0x5865F2,
+        timestamp=datetime.utcnow()
+    )
+
+    if pending:
+        embed.add_field(
+            name="⬜ Pending",
+            value="\n".join(f"• {t}" for t in pending),
+            inline=False
+        )
+    else:
+        embed.add_field(name="⬜ Pending", value="*No pending tasks!*", inline=False)
+
+    if completed:
+        embed.add_field(
+            name="✅ Completed",
+            value="\n".join(f"~~{t}~~" for t in completed),
+            inline=False
+        )
+
+    embed.set_footer(text=f"Use [-] task to add • [x] task to complete")
+    return embed
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Ignore bots
+    if message.author.bot:
+        return
+
+    content = message.content.strip()
+
+    # Parse lines — each line can be [-] task or [x] task
+    lines = content.splitlines()
+
+    new_pending = []
+    new_completed = []
+
+    for line in lines:
+        line = line.strip()
+        pending_match = _re.match(r"^\[-\]\s+(.+)$", line, _re.IGNORECASE)
+        completed_match = _re.match(r"^\[x\]\s+(.+)$", line, _re.IGNORECASE)
+        if pending_match:
+            new_pending.append(pending_match.group(1).strip())
+        elif completed_match:
+            new_completed.append(completed_match.group(1).strip())
+
+    # Only handle message if it has at least one todo line
+    if not new_pending and not new_completed:
+        await bot.process_commands(message)
+        return
+
+    # Delete the user's input message for a cleaner look
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    key = f"{message.channel.id}:{message.author.id}"
+
+    if key not in todo_data:
+        todo_data[key] = {
+            "pending": [],
+            "completed": [],
+            "embed_message_id": None
+        }
+
+    user_todo = todo_data[key]
+
+    # Add new pending tasks (avoid duplicates)
+    for task in new_pending:
+        if task not in user_todo["pending"] and task not in user_todo["completed"]:
+            user_todo["pending"].append(task)
+
+    # Mark tasks as completed
+    for task in new_completed:
+        # Try to find a case-insensitive match in pending
+        match = next(
+            (p for p in user_todo["pending"] if p.lower() == task.lower()),
+            None
+        )
+        if match:
+            user_todo["pending"].remove(match)
+            if match not in user_todo["completed"]:
+                user_todo["completed"].append(match)
+        else:
+            # Task wasn't in pending — add directly to completed if not there yet
+            if task not in user_todo["completed"]:
+                user_todo["completed"].append(task)
+
+    save_todo_data(todo_data)
+
+    embed = make_todo_embed(message.author, user_todo["pending"], user_todo["completed"])
+
+    # Edit existing embed message or send a new one
+    existing_msg_id = user_todo.get("embed_message_id")
+    if existing_msg_id:
+        try:
+            existing_msg = await message.channel.fetch_message(existing_msg_id)
+            await existing_msg.edit(embed=embed)
+            await bot.process_commands(message)
+            return
+        except Exception:
+            pass  # Message was deleted — fall through to send a new one
+
+    sent = await message.channel.send(embed=embed)
+    user_todo["embed_message_id"] = sent.id
+    save_todo_data(todo_data)
+
+    await bot.process_commands(message)
+
+
+@tree.command(name="cleartodo", description="Clear your to-do list in this channel")
+@app_commands.describe(what="What to clear")
+@app_commands.choices(what=[
+    app_commands.Choice(name="All tasks", value="all"),
+    app_commands.Choice(name="Completed only", value="completed"),
+])
+async def cleartodo(interaction: discord.Interaction, what: app_commands.Choice[str] = None):
+    key = f"{interaction.channel.id}:{interaction.user.id}"
+    clear = what.value if what else "all"
+
+    if key not in todo_data:
+        return await interaction.response.send_message("You have no to-do list here!", ephemeral=True)
+
+    user_todo = todo_data[key]
+
+    if clear == "all":
+        user_todo["pending"] = []
+        user_todo["completed"] = []
+    elif clear == "completed":
+        user_todo["completed"] = []
+
+    save_todo_data(todo_data)
+
+    embed = make_todo_embed(interaction.user, user_todo["pending"], user_todo["completed"])
+
+    # Update existing embed if present
+    existing_msg_id = user_todo.get("embed_message_id")
+    if existing_msg_id:
+        try:
+            existing_msg = await interaction.channel.fetch_message(existing_msg_id)
+            await existing_msg.edit(embed=embed)
+        except Exception:
+            sent = await interaction.channel.send(embed=embed)
+            user_todo["embed_message_id"] = sent.id
+            save_todo_data(todo_data)
+    else:
+        sent = await interaction.channel.send(embed=embed)
+        user_todo["embed_message_id"] = sent.id
+        save_todo_data(todo_data)
+
+    await interaction.response.send_message("✅ To-do list cleared!", ephemeral=True)
+
 
 # =====================================================
 #                     MAIN ENTRY
