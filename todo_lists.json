@@ -4,9 +4,21 @@
             {
                 "id": "001",
                 "name": "hi c:"
+            },
+            {
+                "id": "002",
+                "name": "complete chapter 6 and chapter 7"
+            },
+            {
+                "id": "003",
+                "name": "write research paper on quantum physics"
+            },
+            {
+                "id": "004",
+                "name": "read book \"the subtle art of not giving a fk\""
             }
         ],
         "completed": [],
-        "embed_message_id": 1474840581640425736
+        "embed_message_id": 1474840699793969383
     }
 }
