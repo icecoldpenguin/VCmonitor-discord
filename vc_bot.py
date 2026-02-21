@@ -2254,7 +2254,21 @@ async def buy(interaction: discord.Interaction, item_number: int):
 
 import re as _re
 
-def make_todo_embed(user: discord.User | discord.Member, pending: list, completed: list) -> discord.Embed:
+def _next_task_id(user_todo: dict) -> str:
+    """Return the next available zero-padded 3-digit ID (001, 002, …)."""
+    used = {t["id"] for t in user_todo["pending"] + user_todo["completed"]}
+    n = 1
+    while True:
+        candidate = f"{n:03d}"
+        if candidate not in used:
+            return candidate
+        n += 1
+
+
+def make_todo_embed(user: discord.User | discord.Member, user_todo: dict) -> discord.Embed:
+    pending   = user_todo["pending"]
+    completed = user_todo["completed"]
+
     embed = discord.Embed(
         title=f"📋 {user.display_name}'s To-Do List",
         color=0x5865F2,
@@ -2264,7 +2278,7 @@ def make_todo_embed(user: discord.User | discord.Member, pending: list, complete
     if pending:
         embed.add_field(
             name="⬜ Pending",
-            value="\n".join(f"• {t}" for t in pending),
+            value="\n".join(f"⬜ `{t['id']}` {t['name']}" for t in pending),
             inline=False
         )
     else:
@@ -2273,12 +2287,28 @@ def make_todo_embed(user: discord.User | discord.Member, pending: list, complete
     if completed:
         embed.add_field(
             name="✅ Completed",
-            value="\n".join(f"~~{t}~~" for t in completed),
+            value="\n".join(f"✅ ~~`{t['id']}` {t['name']}~~" for t in completed),
             inline=False
         )
 
-    embed.set_footer(text=f"Use [-] task to add • [x] task to complete")
+    embed.set_footer(text="[-] task to add  •  [x] 001 or [x] task name to complete")
     return embed
+
+
+async def _update_or_send_embed(channel, user_todo: dict, author):
+    """Edit the existing embed or post a new one, saving the message ID."""
+    embed = make_todo_embed(author, user_todo)
+    existing_msg_id = user_todo.get("embed_message_id")
+    if existing_msg_id:
+        try:
+            existing_msg = await channel.fetch_message(existing_msg_id)
+            await existing_msg.edit(embed=embed)
+            return
+        except Exception:
+            pass
+    sent = await channel.send(embed=embed)
+    user_todo["embed_message_id"] = sent.id
+    save_todo_data(todo_data)
 
 
 @bot.event
@@ -2288,16 +2318,14 @@ async def on_message(message: discord.Message):
         return
 
     content = message.content.strip()
+    lines   = content.splitlines()
 
-    # Parse lines — each line can be [-] task or [x] task
-    lines = content.splitlines()
-
-    new_pending = []
+    new_pending   = []
     new_completed = []
 
     for line in lines:
         line = line.strip()
-        pending_match = _re.match(r"^\[-\]\s+(.+)$", line, _re.IGNORECASE)
+        pending_match   = _re.match(r"^\[-\]\s+(.+)$", line, _re.IGNORECASE)
         completed_match = _re.match(r"^\[x\]\s+(.+)$", line, _re.IGNORECASE)
         if pending_match:
             new_pending.append(pending_match.group(1).strip())
@@ -2319,53 +2347,46 @@ async def on_message(message: discord.Message):
 
     if key not in todo_data:
         todo_data[key] = {
-            "pending": [],
-            "completed": [],
+            "pending": [],       # list of {"id": "001", "name": "task text"}
+            "completed": [],     # same structure
             "embed_message_id": None
         }
 
     user_todo = todo_data[key]
 
-    # Add new pending tasks (avoid duplicates)
-    for task in new_pending:
-        if task not in user_todo["pending"] and task not in user_todo["completed"]:
-            user_todo["pending"].append(task)
+    # --- Add new pending tasks (avoid duplicates by name) ---
+    existing_names = {t["name"].lower() for t in user_todo["pending"] + user_todo["completed"]}
+    for task_name in new_pending:
+        if task_name.lower() not in existing_names:
+            task_id = _next_task_id(user_todo)
+            user_todo["pending"].append({"id": task_id, "name": task_name})
+            existing_names.add(task_name.lower())
 
-    # Mark tasks as completed
-    for task in new_completed:
-        # Try to find a case-insensitive match in pending
-        match = next(
-            (p for p in user_todo["pending"] if p.lower() == task.lower()),
-            None
-        )
-        if match:
-            user_todo["pending"].remove(match)
-            if match not in user_todo["completed"]:
-                user_todo["completed"].append(match)
+    # --- Mark tasks as completed (by ID or by name, pending-only) ---
+    for raw in new_completed:
+        # Check if the raw value looks like an ID (1–3 digits, possibly zero-padded)
+        id_match = _re.fullmatch(r"0*(\d{1,3})", raw.strip())
+
+        if id_match:
+            # Normalise to zero-padded form e.g. "1" → "001"
+            normalised_id = f"{int(id_match.group(1)):03d}"
+            task = next((t for t in user_todo["pending"] if t["id"] == normalised_id), None)
         else:
-            # Task wasn't in pending — add directly to completed if not there yet
-            if task not in user_todo["completed"]:
+            # Match by name (case-insensitive), pending only
+            task = next(
+                (t for t in user_todo["pending"] if t["name"].lower() == raw.lower()),
+                None
+            )
+
+        if task:
+            user_todo["pending"].remove(task)
+            # Only add to completed if not already there
+            if not any(c["id"] == task["id"] for c in user_todo["completed"]):
                 user_todo["completed"].append(task)
+        # If no match found in pending, silently ignore (per spec: must be in pending)
 
     save_todo_data(todo_data)
-
-    embed = make_todo_embed(message.author, user_todo["pending"], user_todo["completed"])
-
-    # Edit existing embed message or send a new one
-    existing_msg_id = user_todo.get("embed_message_id")
-    if existing_msg_id:
-        try:
-            existing_msg = await message.channel.fetch_message(existing_msg_id)
-            await existing_msg.edit(embed=embed)
-            await bot.process_commands(message)
-            return
-        except Exception:
-            pass  # Message was deleted — fall through to send a new one
-
-    sent = await message.channel.send(embed=embed)
-    user_todo["embed_message_id"] = sent.id
-    save_todo_data(todo_data)
-
+    await _update_or_send_embed(message.channel, user_todo, message.author)
     await bot.process_commands(message)
 
 
@@ -2376,7 +2397,7 @@ async def on_message(message: discord.Message):
     app_commands.Choice(name="Completed only", value="completed"),
 ])
 async def cleartodo(interaction: discord.Interaction, what: app_commands.Choice[str] = None):
-    key = f"{interaction.channel.id}:{interaction.user.id}"
+    key   = f"{interaction.channel.id}:{interaction.user.id}"
     clear = what.value if what else "all"
 
     if key not in todo_data:
@@ -2385,30 +2406,13 @@ async def cleartodo(interaction: discord.Interaction, what: app_commands.Choice[
     user_todo = todo_data[key]
 
     if clear == "all":
-        user_todo["pending"] = []
+        user_todo["pending"]   = []
         user_todo["completed"] = []
     elif clear == "completed":
         user_todo["completed"] = []
 
     save_todo_data(todo_data)
-
-    embed = make_todo_embed(interaction.user, user_todo["pending"], user_todo["completed"])
-
-    # Update existing embed if present
-    existing_msg_id = user_todo.get("embed_message_id")
-    if existing_msg_id:
-        try:
-            existing_msg = await interaction.channel.fetch_message(existing_msg_id)
-            await existing_msg.edit(embed=embed)
-        except Exception:
-            sent = await interaction.channel.send(embed=embed)
-            user_todo["embed_message_id"] = sent.id
-            save_todo_data(todo_data)
-    else:
-        sent = await interaction.channel.send(embed=embed)
-        user_todo["embed_message_id"] = sent.id
-        save_todo_data(todo_data)
-
+    await _update_or_send_embed(interaction.channel, user_todo, interaction.user)
     await interaction.response.send_message("✅ To-do list cleared!", ephemeral=True)
 
 
